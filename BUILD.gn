@@ -350,6 +350,7 @@ rtc_test("libwebrtc_unittests") {
   testonly = true
 
   sources = [
+     "test/peerconnection_factory.test.cc",
      "test/peerconnection.test.cc",
      "test/tests.cc",
   ]

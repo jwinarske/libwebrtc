@@ -598,7 +598,15 @@ RTCPeerConnection_GetSignalingState (
     rtcSignalingState* pOutRetVal
 ) noexcept
 {
-  DECLARE_GET_VALUE(handle, pOutRetVal, rtcSignalingState, RTCPeerConnection, signaling_state);
+  CHECK_POINTER(pOutRetVal);
+  *pOutRetVal = static_cast<rtcSignalingState>(0);
+  CHECK_NATIVE_HANDLE(handle);
+  libwebrtc::scoped_refptr<RTCPeerConnection> p = static_cast<RTCPeerConnection*>(handle);
+  if (!p->IsInitialized()) {
+    return rtcResultU4::kPeerConnectionClosed;
+  }
+  *pOutRetVal = static_cast<rtcSignalingState>(p->signaling_state());
+  return rtcResultU4::kSuccess;
 }
 
 rtcResultU4 LIB_WEBRTC_CALL
@@ -607,7 +615,15 @@ RTCPeerConnection_GetIceConnectionState (
     rtcIceConnectionState* pOutRetVal
 ) noexcept
 {
-  DECLARE_GET_VALUE(handle, pOutRetVal, rtcIceConnectionState, RTCPeerConnection, ice_connection_state);
+  CHECK_POINTER(pOutRetVal);
+  *pOutRetVal = static_cast<rtcIceConnectionState>(0);
+  CHECK_NATIVE_HANDLE(handle);
+  libwebrtc::scoped_refptr<RTCPeerConnection> p = static_cast<RTCPeerConnection*>(handle);
+  if (!p->IsInitialized()) {
+    return rtcResultU4::kPeerConnectionClosed;
+  }
+  *pOutRetVal = static_cast<rtcIceConnectionState>(p->ice_connection_state());
+  return rtcResultU4::kSuccess;
 }
 
 rtcResultU4 LIB_WEBRTC_CALL
@@ -616,7 +632,15 @@ RTCPeerConnection_GetStandardizedIceConnectionState (
     rtcIceConnectionState* pOutRetVal
 ) noexcept
 {
-  DECLARE_GET_VALUE(handle, pOutRetVal, rtcIceConnectionState, RTCPeerConnection, standardized_ice_connection_state);
+  CHECK_POINTER(pOutRetVal);
+  *pOutRetVal = static_cast<rtcIceConnectionState>(0);
+  CHECK_NATIVE_HANDLE(handle);
+  libwebrtc::scoped_refptr<RTCPeerConnection> p = static_cast<RTCPeerConnection*>(handle);
+  if (!p->IsInitialized()) {
+    return rtcResultU4::kPeerConnectionClosed;
+  }
+  *pOutRetVal = static_cast<rtcIceConnectionState>(p->standardized_ice_connection_state());
+  return rtcResultU4::kSuccess;
 }
 
 rtcResultU4 LIB_WEBRTC_CALL
@@ -625,7 +649,15 @@ RTCPeerConnection_GetPeerConnectionState (
     rtcPeerConnectionState* pOutRetVal
 ) noexcept
 {
-  DECLARE_GET_VALUE(handle, pOutRetVal, rtcPeerConnectionState, RTCPeerConnection, peer_connection_state);
+  CHECK_POINTER(pOutRetVal);
+  *pOutRetVal = static_cast<rtcPeerConnectionState>(0);
+  CHECK_NATIVE_HANDLE(handle);
+  libwebrtc::scoped_refptr<RTCPeerConnection> p = static_cast<RTCPeerConnection*>(handle);
+  if (!p->IsInitialized()) {
+    return rtcResultU4::kPeerConnectionClosed;
+  }
+  *pOutRetVal = static_cast<rtcPeerConnectionState>(p->peer_connection_state());
+  return rtcResultU4::kSuccess;
 }
 
 rtcResultU4 LIB_WEBRTC_CALL
@@ -634,5 +666,13 @@ RTCPeerConnection_GetIceGatheringState (
     rtcIceGatheringState* pOutRetVal
 ) noexcept
 {
-  DECLARE_GET_VALUE(handle, pOutRetVal, rtcIceGatheringState, RTCPeerConnection, ice_gathering_state);
+  CHECK_POINTER(pOutRetVal);
+  *pOutRetVal = static_cast<rtcIceGatheringState>(0);
+  CHECK_NATIVE_HANDLE(handle);
+  libwebrtc::scoped_refptr<RTCPeerConnection> p = static_cast<RTCPeerConnection*>(handle);
+  if (!p->IsInitialized()) {
+    return rtcResultU4::kPeerConnectionClosed;
+  }
+  *pOutRetVal = static_cast<rtcIceGatheringState>(p->ice_gathering_state());
+  return rtcResultU4::kSuccess;
 }
