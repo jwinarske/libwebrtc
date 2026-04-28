@@ -42,7 +42,7 @@ class DummyAudioCapturer : public AudioSourceInterface {
   virtual void RegisterObserver(ObserverInterface* observer) override {}
   virtual void UnregisterObserver(ObserverInterface* observer) override {}
 
-  virtual const cricket::AudioOptions options() const override {
+  virtual const webrtc::AudioOptions options() const override {
     return {};
   }
 

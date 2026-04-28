@@ -613,6 +613,8 @@ bool RTCPeerConnectionImpl::Initialize() {
   if (configuration_.screencast_min_bitrate > 0)
     config.screencast_min_bitrate = configuration_.screencast_min_bitrate;
 
+  config.set_dscp(configuration_.enable_dscp);
+
   RTCMediaConstraintsImpl* media_constraints =
       static_cast<RTCMediaConstraintsImpl*>(constraints_.get());
   webrtc::MediaConstraints rtc_constraints(media_constraints->GetMandatory(),
@@ -689,9 +691,12 @@ void RTCPeerConnectionImpl::SetLocalDescription(const string sdp,
                                        &error));
 
   if (!session_description) {
-    std::string error = "Can't parse received session description message.";
-    RTC_LOG(LS_WARNING) << error;
-    failure(error.c_str());
+    std::stringstream ss;
+    ss << "RTCPeerConnectionImpl::SetLocalDescription:: Can't parse received session description message: ";
+    ss << "line: " << error.line << ", ";
+    ss << "description:" << error.description;
+    RTC_LOG(LS_WARNING) << ss.str();
+    failure(ss.str().c_str());
     return;
   }
   webrtc::scoped_refptr<webrtc::SetLocalDescriptionObserverInterface> observer =
@@ -718,9 +723,12 @@ void RTCPeerConnectionImpl::SetRemoteDescription(const string sdp,
       webrtc::CreateSessionDescription(*maybe_type, sdp.std_string(), &error));
 
   if (!session_description) {
-    std::string error = "Can't parse received session description message.";
-    RTC_LOG(LS_WARNING) << error;
-    failure(error.c_str());
+    std::stringstream ss;
+    ss << "RTCPeerConnectionImpl::SetRemoteDescription:: Can't parse received session description message: ";
+    ss << "line: " << error.line << ", ";
+    ss << "description:" << error.description;
+    RTC_LOG(LS_WARNING) << ss.str();
+    failure(ss.str().c_str());
     return;
   }
 

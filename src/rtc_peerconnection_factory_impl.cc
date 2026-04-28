@@ -2,6 +2,7 @@
 
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
+#include "api/audio/create_audio_device_module.h"
 #include "api/create_peerconnection_factory.h"
 #include "api/media_stream_interface.h"
 #include "api/video_codecs/builtin_video_decoder_factory.h"
@@ -46,7 +47,8 @@ std::unique_ptr<webrtc::VideoDecoderFactory> CreateIntelVideoDecoderFactory() {
 }
 #endif
 
-RTCPeerConnectionFactoryImpl::RTCPeerConnectionFactoryImpl() {}
+RTCPeerConnectionFactoryImpl::RTCPeerConnectionFactoryImpl():
+env_(webrtc::EnvironmentFactory().Create()) {}
 
 RTCPeerConnectionFactoryImpl::~RTCPeerConnectionFactoryImpl() {}
 
@@ -120,11 +122,12 @@ bool RTCPeerConnectionFactoryImpl::Terminate() {
 
 void RTCPeerConnectionFactoryImpl::CreateAudioDeviceModule_w() {
   if (!audio_device_module_)
-    audio_device_module_ = webrtc::AudioDeviceModule::Create(
+    audio_device_module_ = webrtc::CreateAudioDeviceModule(
+        env_,
         use_dummy_audio_ 
           ? webrtc::AudioDeviceModule::kDummyAudio
           : webrtc::AudioDeviceModule::kPlatformDefaultAudio,
-        task_queue_factory_.get());
+        false);
 }
 
 void RTCPeerConnectionFactoryImpl::DestroyAudioDeviceModule_w() {
@@ -391,7 +394,7 @@ scoped_refptr<RTCDummyVideoCapturer> RTCPeerConnectionFactoryImpl::CreateDummyVi
 scoped_refptr<RTCVideoSource> RTCPeerConnectionFactoryImpl::CreateDummyVideoSource(
       scoped_refptr<RTCDummyVideoCapturer> capturer, const string video_source_label)
 {
-  if (rtc::Thread::Current() != signaling_thread_.get()) {
+  if (webrtc::Thread::Current() != signaling_thread_.get()) {
     scoped_refptr<RTCVideoSource> source = signaling_thread_->BlockingCall(
         [this, capturer, video_source_label] {
           return CreateDummyVideoSource_s(

@@ -1,6 +1,5 @@
 #include "interop_api.h"
 #include "rtc_frame_cryptor.h"
-#include "src/rtc_frame_cryptor_impl.h"
 #include "src/rtc_peerconnection_factory_impl.h"
 #include "src/rtc_rtp_receiver_impl.h"
 #include "src/rtc_rtp_sender_impl.h"
@@ -88,14 +87,14 @@ private:
 };
 
 // Helper function to convert algorithm
-static libwebrtc::Algorithm ConvertAlgorithm(rtcFrameCryptionAlgorithm algorithm) {
+static libwebrtc::FrameCryptorAlgorithm ConvertAlgorithm(rtcFrameCryptionAlgorithm algorithm) {
     switch (algorithm) {
         case rtcFrameCryptionAlgorithm::kAesGcm:
-            return libwebrtc::Algorithm::kAesGcm;
+            return libwebrtc::FrameCryptorAlgorithm::kAesGcm;
         case rtcFrameCryptionAlgorithm::kAesCbc:
-            return libwebrtc::Algorithm::kAesCbc;
+            return libwebrtc::FrameCryptorAlgorithm::kAesCbc;
         default:
-            return libwebrtc::Algorithm::kAesGcm;
+            return libwebrtc::FrameCryptorAlgorithm::kAesGcm;
     }
 }
 

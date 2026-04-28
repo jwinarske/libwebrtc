@@ -126,9 +126,9 @@ int VideoFrameBufferImpl::ScaleFrom(scoped_refptr<RTCVideoFrame> source)
   if (nullptr == source_impl->buffer_) {
     return 0;
   }
-  rtc::scoped_refptr<webrtc::I420Buffer> i420 =
+  webrtc::scoped_refptr<webrtc::I420Buffer> i420 =
       webrtc::I420Buffer::Rotate(*buffer_.get(), rotation_);
-  rtc::scoped_refptr<webrtc::I420Buffer> i420_source =
+  webrtc::scoped_refptr<webrtc::I420Buffer> i420_source =
       webrtc::I420Buffer::Rotate(
         *source_impl->buffer_.get(), 
         static_cast<webrtc::VideoRotation>(source_impl->rotation())
@@ -161,9 +161,9 @@ int VideoFrameBufferImpl::ScaleFrom(RTCVideoFrameARGB* source)
       return 0; // Unknown type
   }
 
-  rtc::scoped_refptr<webrtc::I420Buffer> i420_src =
+  webrtc::scoped_refptr<webrtc::I420Buffer> i420_src =
       webrtc::I420Buffer::Create(source->width, source->height);
-  rtc::scoped_refptr<webrtc::I420Buffer> i420_dst =
+  webrtc::scoped_refptr<webrtc::I420Buffer> i420_dst =
       webrtc::I420Buffer::Create(width(), height());
 
   switch (source->type) {
@@ -244,9 +244,9 @@ int VideoFrameBufferImpl::ScaleFrom(RTCVideoFrameYUV* source)
     return ScaleFrom(videoFrame);
   }
   else if (source->type == RTCVideoFrameTypeYUV::kYUY2) {
-    rtc::scoped_refptr<webrtc::I420Buffer> i420_src =
+    webrtc::scoped_refptr<webrtc::I420Buffer> i420_src =
       webrtc::I420Buffer::Create(source->width, source->height);
-    rtc::scoped_refptr<webrtc::I420Buffer> i420_dst =
+    webrtc::scoped_refptr<webrtc::I420Buffer> i420_dst =
         webrtc::I420Buffer::Create(width(), height());
         
     int retVal = libyuv::YUY2ToI420(
@@ -374,7 +374,7 @@ scoped_refptr<RTCVideoFrame> RTCVideoFrame::Create(int width, int height) {
   RTC_DCHECK(width > 1);
   RTC_DCHECK(height > 1);
 
-  rtc::scoped_refptr<webrtc::I420Buffer> i420_buffer = webrtc::I420Buffer::Create(
+  webrtc::scoped_refptr<webrtc::I420Buffer> i420_buffer = webrtc::I420Buffer::Create(
       width, height);
   
   scoped_refptr<VideoFrameBufferImpl> frame =

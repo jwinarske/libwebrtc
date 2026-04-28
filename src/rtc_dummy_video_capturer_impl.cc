@@ -181,7 +181,7 @@ void RTCDummyVideoCapturerImpl::OnFrameReady(const scoped_refptr<RTCVideoFrame>&
   );
   
   webrtc::VideoRotation rotation = static_cast<webrtc::VideoRotation>(frame->rotation());
-  OnFrame(webrtc::VideoFrame(i420_buffer_, 0, rtc::TimeMillis(), rotation));
+  OnFrame(webrtc::VideoFrame(i420_buffer_, 0, webrtc::TimeMillis(), rotation));
 }
 
 void RTCDummyVideoCapturerImpl::FillBuffer() {

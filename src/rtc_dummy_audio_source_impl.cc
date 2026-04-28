@@ -74,7 +74,7 @@ void DummyAudioSourceObserverImpl::OnFillBuffer(
  */
 
 RTCDummyAudioSourceImpl::RTCDummyAudioSourceImpl(
-    rtc::scoped_refptr<webrtc::internal::DummyAudioCapturer> rtc_audio_source
+    webrtc::scoped_refptr<webrtc::internal::DummyAudioCapturer> rtc_audio_source
 ) : rtc_audio_source_(rtc_audio_source)
 {
   RTC_LOG(LS_INFO) << __FUNCTION__ << ": ctor " << (void*)this;
