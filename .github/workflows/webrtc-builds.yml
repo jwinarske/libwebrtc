@@ -1,4 +1,4 @@
-name: WebRTC xcframework builds
+name: libwebrtc binary build/release.
 on:
   push:
     paths-ignore:
@@ -14,7 +14,6 @@ on:
       commitHash:
         description: 'webrtc-sdk commit hash'
         default: ''
-        required: true
       configuration:
         description: 'build configuration'
         default: 'release'
@@ -23,6 +22,22 @@ on:
         options:
           - release
           - debug
+      build_linux:
+        description: 'Build Linux (x64 + arm64)'
+        type: boolean
+        default: true
+      build_windows:
+        description: 'Build Windows (x64 + arm64)'
+        type: boolean
+        default: true
+      build_apple:
+        description: 'Build Apple xcframework (mac/ios/tvos/visionos)'
+        type: boolean
+        default: true
+      build_android:
+        description: 'Build Android AAR (multi-arch)'
+        type: boolean
+        default: true
 
 permissions:
   packages: write
@@ -30,10 +45,124 @@ permissions:
   actions: read
 
 jobs:
-  build-apple:
+  build-linux:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.build_linux == 'true'
     strategy:
       fail-fast: false
-    name: Build webrtc xcframework for apple
+      matrix:
+        arch: [x64, arm64]
+        profile:
+          - ${{ github.event.inputs.configuration || 'release' }}
+    name: Build libwebrtc.so for Linux (${{ matrix.arch }}-${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: install setuptools
+        run: |
+          pip3 install setuptools # pkg_resources is sometimes not found?
+
+      - name: Install linux dependencies
+        run: |
+            sudo apt update -y
+            sudo apt install -y ninja-build pkg-config openjdk-11-jdk
+
+      - name: Print ninja version
+        run: ninja --version
+
+      - name: Target OS
+        run: echo -e "\ntarget_os = [\"linux\"]" >> .gclient
+        shell: bash
+        working-directory: build
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          android: false
+          tool-cache: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Build WebRTC
+        run: chmod +x ./libwebrtc_linux_build.sh && ./libwebrtc_linux_build.sh --arch ${{ matrix.arch }} --profile ${{ matrix.profile }} --commit "${{ github.event.inputs.commitHash }}"
+        working-directory: build
+
+      - name: Zip artifact (Unix)
+        run: |
+          cd build
+          zip ${{ github.workspace }}/libwebrtc-linux-${{ matrix.arch }}-${{ matrix.profile }}.zip linux-${{ matrix.arch }}-${{ matrix.profile }} -r
+
+      - name: Generate shasum
+        run: |
+          cd ${{ github.workspace }}
+          shasum -a 256 libwebrtc-linux-${{ matrix.arch }}-${{ matrix.profile }}.zip > libwebrtc-linux-${{ matrix.arch }}-${{ matrix.profile }}.zip.shasum
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: libwebrtc-linux-${{ matrix.arch }}-${{ matrix.profile }}
+          path: libwebrtc-linux-${{ matrix.arch }}-${{ matrix.profile }}.zip*
+
+  build-win:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.build_windows == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+        profile:
+          - ${{ github.event.inputs.configuration || 'release' }}
+    name: Build libwebrtc.dll for Windows (${{ matrix.arch }}-${{ matrix.profile }})
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Install windows dependencies
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/ninja-build/ninja/releases/latest/download/ninja-win.zip" -OutFile ninja.zip
+          Expand-Archive -Path ninja.zip -DestinationPath ${{ github.workspace }}\ninja
+          echo "${{ github.workspace }}\ninja" | Out-File -Append -Encoding utf8 -FilePath $Env:GITHUB_PATH
+
+      - name: Print ninja version
+        run: ninja --version
+
+      - name: Target OS
+        run: echo -e "\ntarget_os = [\"win\"]" >> .gclient
+        shell: bash
+        working-directory: build
+
+      - name: Build WebRTC
+        run: .\libwebrtc_win_build.cmd --arch ${{ matrix.arch }} --profile ${{ matrix.profile }} --commit "${{ github.event.inputs.commitHash }}"
+        working-directory: build
+
+      - name: Zip artifact (Windows)
+        run: Compress-Archive -Path .\build\libwebrtc-${{ matrix.arch }}-${{ matrix.profile }} -DestinationPath .\build\libwebrtc-win-${{ matrix.arch }}-${{ matrix.profile }}.zip
+
+      - name: Generate shasum
+        shell: pwsh
+        run: |
+          $zip = "build\libwebrtc-win-${{ matrix.arch }}-${{ matrix.profile }}.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          $name = Split-Path $zip -Leaf
+          "$hash  $name" | Out-File -Encoding ascii -NoNewline "$zip.shasum"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: libwebrtc-win-${{ matrix.arch }}-${{ matrix.profile }}
+          path: build\libwebrtc-win-${{ matrix.arch }}-${{ matrix.profile }}.zip*
+
+  build-apple:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.build_apple == 'true'
+    strategy:
+      fail-fast: false
+    name: Build WebRTC xcframework for apple
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
@@ -51,33 +180,103 @@ jobs:
         working-directory: build
         
       - name: Build WebRTC
-        run: chmod +x ./xcframework_dynamic_build.sh && ./xcframework_dynamic_build.sh release
+        run: chmod +x ./libwebrtc_apple_build.sh && ./libwebrtc_apple_build.sh --profile ${{ github.event.inputs.configuration || 'release' }} --commit "${{ github.event.inputs.commitHash }}"
         working-directory: build
-      
+
+      - name: Generate shasum
+        run: |
+          cd build/out-${{ github.event.inputs.configuration || 'release' }}
+          shasum -a 256 WebRTC.xcframework.zip > WebRTC.xcframework.zip.shasum
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: webrtc-xcframework
-          path: build/out-release/WebRTC.xcframework.zip*
+          name: webrtc-xcframework-${{ github.event.inputs.configuration || 'release' }}
+          path: build/out-${{ github.event.inputs.configuration || 'release' }}/WebRTC.xcframework.zip*
+
+  build-android:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.build_android == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - ${{ github.event.inputs.configuration || 'release' }}
+    name: Build libwebrtc.aar for Android (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: install setuptools
+        run: pip3 install setuptools
+
+      - name: Install linux dependencies
+        run: |
+          sudo apt update -y
+          sudo apt install -y ninja-build pkg-config openjdk-17-jdk
+
+      - name: Print ninja version
+        run: ninja --version
+
+      - name: Target OS
+        run: echo -e "\ntarget_os = [\"android\"]" >> .gclient
+        shell: bash
+        working-directory: build
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          android: false
+          tool-cache: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Build WebRTC
+        run: chmod +x ./libwebrtc_android_build.sh && ./libwebrtc_android_build.sh --profile ${{ matrix.profile }} --commit "${{ github.event.inputs.commitHash }}"
+        working-directory: build
+
+      - name: Rename AAR
+        run: mv build/android-${{ matrix.profile }}/libwebrtc.aar build/android-${{ matrix.profile }}/libwebrtc-android-${{ matrix.profile }}.aar
+
+      - name: Generate shasum
+        run: |
+          cd build/android-${{ matrix.profile }}
+          shasum -a 256 libwebrtc-android-${{ matrix.profile }}.aar > libwebrtc-android-${{ matrix.profile }}.aar.shasum
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: libwebrtc-android-${{ matrix.profile }}
+          path: build/android-${{ matrix.profile }}/libwebrtc-android-${{ matrix.profile }}.aar*
 
   create-release:
     name: Release to GH (Draft)
     if: startsWith(github.ref, 'refs/tags')
     needs:
       - build-apple
+      - build-win
+      - build-linux
+      - build-android
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          name: webrtc-xcframework
-          path: ${{ github.workspace }}/webrtc-xcframework
-    
+          path: ${{ github.workspace }}/artifacts
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: ls -lR ${{ github.workspace }}/artifacts
+
       - name: Create draft release
         run: |
           gh release create ${{ github.ref_name }} --draft --title "${{ github.ref_name }}"
-          gh release upload ${{ github.ref_name }} ${{ github.workspace }}/webrtc-xcframework/*
+          gh release upload ${{ github.ref_name }} ${{ github.workspace }}/artifacts/*
