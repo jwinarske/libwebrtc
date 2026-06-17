@@ -350,8 +350,31 @@ rtc_test("libwebrtc_unittests") {
   testonly = true
 
   sources = [
+     "test/audio_data.test.cc",
+     "test/audio_device.test.cc",
+     "test/audio_processing.test.cc",
+     "test/data_channel.test.cc",
+     "test/dtls_transport.test.cc",
+     "test/dtmf_sender.test.cc",
+     "test/dummy_audio_source.test.cc",
+     "test/frame_cryptor.test.cc",
+     "test/ice_candidate.test.cc",
+     "test/key_provider.test.cc",
+     "test/logging.test.cc",
+     "test/media_stream.test.cc",
+     "test/media_track.test.cc",
+     "test/mediaconstraints.test.cc",
      "test/peerconnection_factory.test.cc",
      "test/peerconnection.test.cc",
+     "test/rtp_capabilities.test.cc",
+     "test/rtp_parameters.test.cc",
+     "test/rtp_sender_receiver.test.cc",
+     "test/rtp_transceiver.test.cc",
+     "test/sdp_parse_error.test.cc",
+     "test/session_description.test.cc",
+     "test/stats.test.cc",
+     "test/video_device.test.cc",
+     "test/video_frame.test.cc",
      "test/tests.cc",
   ]
 

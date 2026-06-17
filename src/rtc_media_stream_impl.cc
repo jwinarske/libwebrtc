@@ -37,20 +37,16 @@ MediaStreamImpl::~MediaStreamImpl() {
 
 bool MediaStreamImpl::AddTrack(scoped_refptr<RTCAudioTrack> track) {
   AudioTrackImpl* track_impl = static_cast<AudioTrackImpl*>(track.get());
-  if (rtc_media_stream_->AddTrack(track_impl->rtc_track())) {
-    audio_tracks_.push_back(track);
-    return true;
-  }
-  return false;
+  // Note: the native AddTrack fires OnChanged(), which rebuilds audio_tracks_
+  // from the native stream. Do not also push_back here or the track is counted
+  // twice.
+  return rtc_media_stream_->AddTrack(track_impl->rtc_track());
 }
 
 bool MediaStreamImpl::AddTrack(scoped_refptr<RTCVideoTrack> track) {
   VideoTrackImpl* track_impl = static_cast<VideoTrackImpl*>(track.get());
-  if (rtc_media_stream_->AddTrack(track_impl->rtc_track())) {
-    video_tracks_.push_back(track);
-    return true;
-  }
-  return false;
+  // See AddTrack(RTCAudioTrack): OnChanged() handles bookkeeping.
+  return rtc_media_stream_->AddTrack(track_impl->rtc_track());
 }
 
 bool MediaStreamImpl::RemoveTrack(scoped_refptr<RTCAudioTrack> track) {
