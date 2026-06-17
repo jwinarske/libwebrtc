@@ -28,8 +28,16 @@ if (is_linux) {
 
 config("external_config") {
   include_dirs = [ "include" ]
+  defines = []
   if (is_win) {
-    defines = [ "LIB_WEBRTC_API_DLL" ]
+    defines += [ "LIB_WEBRTC_API_DLL" ]
+  }
+  # The public RTCPeerConnectionFactory vtable contains extra virtual methods
+  # guarded by RTC_DESKTOP_DEVICE. The library is built with this define when
+  # desktop capture is enabled, so consumers must see the same layout or their
+  # virtual calls land on the wrong vtable slot. Expose it publicly to match.
+  if (libwebrtc_desktop_capture) {
+    defines += [ "RTC_DESKTOP_DEVICE" ]
   }
 }
 
@@ -345,36 +353,79 @@ rtc_shared_library("libwebrtc") {
   }
 }
 
-
-rtc_test("libwebrtc_unittests") {
+rtc_test("libwebrtc_cpp_api_unittests") {
   testonly = true
 
   sources = [
+     "test/base_atomicops.test.cc",
+     "test/base_fixed_size_function.test.cc",
+     "test/base_portable.test.cc",
+     "test/base_refcountedobject.test.cc",
+     "test/base_scoped_ref_ptr.test.cc",
+     "test/helper.test.cc",
      "test/audio_data.test.cc",
      "test/audio_device.test.cc",
      "test/audio_processing.test.cc",
+     "test/audio_source.test.cc",
      "test/data_channel.test.cc",
      "test/dtls_transport.test.cc",
      "test/dtmf_sender.test.cc",
-     "test/dummy_audio_source.test.cc",
      "test/frame_cryptor.test.cc",
      "test/ice_candidate.test.cc",
-     "test/key_provider.test.cc",
      "test/logging.test.cc",
      "test/media_stream.test.cc",
      "test/media_track.test.cc",
      "test/mediaconstraints.test.cc",
-     "test/peerconnection_factory.test.cc",
      "test/peerconnection.test.cc",
+     "test/peerconnection_factory.test.cc",
      "test/rtp_capabilities.test.cc",
      "test/rtp_parameters.test.cc",
      "test/rtp_sender_receiver.test.cc",
      "test/rtp_transceiver.test.cc",
      "test/sdp_parse_error.test.cc",
      "test/session_description.test.cc",
-     "test/stats.test.cc",
      "test/video_device.test.cc",
      "test/video_frame.test.cc",
+     "test/tests.cc",
+  ]
+
+   deps = [
+    ":libwebrtc",
+    "//testing/gtest",
+    "//test:test_support",
+    "//test:test_main",
+  ]
+}
+
+rtc_test("libwebrtc_c_api_interop_unittests") {
+  testonly = true
+
+  sources = [
+     "test/c_interop/audio_data.test.cc",
+     "test/c_interop/audio_device.test.cc",
+     "test/c_interop/audio_processing.test.cc",
+     "test/c_interop/data_channel.test.cc",
+     "test/c_interop/dtls_transport.test.cc",
+     "test/c_interop/dtmf_sender.test.cc",
+     "test/c_interop/dummy_audio_source.test.cc",
+     "test/c_interop/frame_cryptor.test.cc",
+     "test/c_interop/ice_candidate.test.cc",
+     "test/c_interop/key_provider.test.cc",
+     "test/c_interop/logging.test.cc",
+     "test/c_interop/media_stream.test.cc",
+     "test/c_interop/media_track.test.cc",
+     "test/c_interop/mediaconstraints.test.cc",
+     "test/c_interop/peerconnection_factory.test.cc",
+     "test/c_interop/peerconnection.test.cc",
+     "test/c_interop/rtp_capabilities.test.cc",
+     "test/c_interop/rtp_parameters.test.cc",
+     "test/c_interop/rtp_sender_receiver.test.cc",
+     "test/c_interop/rtp_transceiver.test.cc",
+     "test/c_interop/sdp_parse_error.test.cc",
+     "test/c_interop/session_description.test.cc",
+     "test/c_interop/stats.test.cc",
+     "test/c_interop/video_device.test.cc",
+     "test/c_interop/video_frame.test.cc",
      "test/tests.cc",
   ]
 

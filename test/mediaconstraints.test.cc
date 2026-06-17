@@ -6,86 +6,45 @@
 
 #include "rtc_base/logging.h"
 
-#include "interop_api.h"
+#include "rtc_mediaconstraints.h"
+#include "libwebrtc.h"
 
 namespace libwebrtc {
 
-TEST(MediaConstraints, CreateReturnsHandle) {
-    rtcMediaConstraintsHandle constraints = MediaConstraints_Create();
-    EXPECT_NE(constraints, nullptr);
-    if (constraints) RefCountedObject_Release(constraints);
+TEST(RTCMediaConstraintsTest, CreateReturnsInstance) {
+  scoped_refptr<RTCMediaConstraints> constraints = RTCMediaConstraints::Create();
+  EXPECT_NE(constraints.get(), nullptr);
 }
 
-TEST(MediaConstraints, AddMandatoryConstraintSucceeds) {
-    rtcMediaConstraintsHandle constraints = MediaConstraints_Create();
-    ASSERT_NE(constraints, nullptr);
+TEST(RTCMediaConstraintsTest, AddMandatoryConstraint) {
+  scoped_refptr<RTCMediaConstraints> constraints = RTCMediaConstraints::Create();
+  ASSERT_TRUE(constraints.get() != nullptr);
 
-    EXPECT_EQ(MediaConstraints_AddMandatoryConstraint(constraints, "key", "value"),
-              rtcResultU4::kSuccess);
-
-    RefCountedObject_Release(constraints);
+  // Should not crash; these are the standard W3C offer/answer keys.
+  constraints->AddMandatoryConstraint(RTCMediaConstraints::kOfferToReceiveAudio,
+                                      RTCMediaConstraints::kValueTrue);
+  constraints->AddMandatoryConstraint(RTCMediaConstraints::kOfferToReceiveVideo,
+                                      RTCMediaConstraints::kValueFalse);
 }
 
-TEST(MediaConstraints, AddOptionalConstraintSucceeds) {
-    rtcMediaConstraintsHandle constraints = MediaConstraints_Create();
-    ASSERT_NE(constraints, nullptr);
+TEST(RTCMediaConstraintsTest, AddOptionalConstraint) {
+  scoped_refptr<RTCMediaConstraints> constraints = RTCMediaConstraints::Create();
+  ASSERT_TRUE(constraints.get() != nullptr);
 
-    EXPECT_EQ(MediaConstraints_AddOptionalConstraint(constraints, "key", "value"),
-              rtcResultU4::kSuccess);
-
-    RefCountedObject_Release(constraints);
+  constraints->AddOptionalConstraint(RTCMediaConstraints::kIceRestart,
+                                     RTCMediaConstraints::kValueTrue);
+  constraints->AddOptionalConstraint(RTCMediaConstraints::kEnableDscp,
+                                     RTCMediaConstraints::kValueFalse);
 }
 
-// --- Negative paths ---
+TEST(RTCMediaConstraintsTest, AddMandatoryAndOptionalTogether) {
+  scoped_refptr<RTCMediaConstraints> constraints = RTCMediaConstraints::Create();
+  ASSERT_TRUE(constraints.get() != nullptr);
 
-TEST(MediaConstraints, AddMandatoryConstraintNullHandleFails) {
-    EXPECT_EQ(MediaConstraints_AddMandatoryConstraint(nullptr, "key", "value"),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(MediaConstraints, AddMandatoryConstraintNullKeyFails) {
-    rtcMediaConstraintsHandle constraints = MediaConstraints_Create();
-    ASSERT_NE(constraints, nullptr);
-
-    EXPECT_EQ(MediaConstraints_AddMandatoryConstraint(constraints, nullptr, "value"),
-              rtcResultU4::kInvalidParameter);
-
-    RefCountedObject_Release(constraints);
-}
-
-TEST(MediaConstraints, AddMandatoryConstraintNullValueFails) {
-    rtcMediaConstraintsHandle constraints = MediaConstraints_Create();
-    ASSERT_NE(constraints, nullptr);
-
-    EXPECT_EQ(MediaConstraints_AddMandatoryConstraint(constraints, "key", nullptr),
-              rtcResultU4::kInvalidParameter);
-
-    RefCountedObject_Release(constraints);
-}
-
-TEST(MediaConstraints, AddOptionalConstraintNullHandleFails) {
-    EXPECT_EQ(MediaConstraints_AddOptionalConstraint(nullptr, "key", "value"),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(MediaConstraints, AddOptionalConstraintNullKeyFails) {
-    rtcMediaConstraintsHandle constraints = MediaConstraints_Create();
-    ASSERT_NE(constraints, nullptr);
-
-    EXPECT_EQ(MediaConstraints_AddOptionalConstraint(constraints, nullptr, "value"),
-              rtcResultU4::kInvalidParameter);
-
-    RefCountedObject_Release(constraints);
-}
-
-TEST(MediaConstraints, AddOptionalConstraintNullValueFails) {
-    rtcMediaConstraintsHandle constraints = MediaConstraints_Create();
-    ASSERT_NE(constraints, nullptr);
-
-    EXPECT_EQ(MediaConstraints_AddOptionalConstraint(constraints, "key", nullptr),
-              rtcResultU4::kInvalidParameter);
-
-    RefCountedObject_Release(constraints);
+  constraints->AddMandatoryConstraint(RTCMediaConstraints::kOfferToReceiveAudio,
+                                      RTCMediaConstraints::kValueTrue);
+  constraints->AddOptionalConstraint(RTCMediaConstraints::kEnableIPv6,
+                                     RTCMediaConstraints::kValueTrue);
 }
 
 }  // namespace libwebrtc

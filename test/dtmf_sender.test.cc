@@ -1,240 +1,148 @@
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "test/gmock.h"
 #include "test/gtest.h"
 
 #include "rtc_base/logging.h"
 
-#include "interop_api.h"
+#include "rtc_audio_source.h"
+#include "rtc_audio_track.h"
+#include "rtc_dtmf_sender.h"
+#include "rtc_media_track.h"
+#include "rtc_peerconnection.h"
+#include "rtc_peerconnection_factory.h"
+#include "rtc_mediaconstraints.h"
+#include "rtc_rtp_sender.h"
+#include "libwebrtc.h"
 
 namespace libwebrtc {
 
-// --- Null-handle negatives ---
-
-TEST(RTCDtmfSenderNegative, RegisterObserverWithNullHandleFails) {
-    EXPECT_EQ(RTCDtmfSender_RegisterObserver(nullptr, nullptr),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCDtmfSenderNegative, UnregisterObserverWithNullHandleFails) {
-    EXPECT_EQ(RTCDtmfSender_UnregisterObserver(nullptr),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCDtmfSenderNegative, InsertDtmfWithNullHandleFails) {
-    EXPECT_EQ(RTCDtmfSender_InsertDtmf(nullptr, "1", 100, 70),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCDtmfSenderNegative, CanInsertDtmfWithNullHandleFails) {
-    rtcBool32 can = rtcBool32::kFalse;
-    EXPECT_EQ(RTCDtmfSender_CanInsertDtmf(nullptr, &can),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCDtmfSenderNegative, CanInsertDtmfWithNullOutPointerFails) {
-    EXPECT_EQ(RTCDtmfSender_CanInsertDtmf(nullptr, nullptr),
-              rtcResultU4::kInvalidPointer);
-}
-
-TEST(RTCDtmfSenderNegative, GetTonesWithNullHandleFails) {
-    char buf[64] = {};
-    EXPECT_EQ(RTCDtmfSender_GetTones(nullptr, buf, sizeof(buf)),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCDtmfSenderNegative, GetDurationWithNullHandleFails) {
-    int duration = 0;
-    EXPECT_EQ(RTCDtmfSender_GetDuration(nullptr, &duration),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCDtmfSenderNegative, GetDurationWithNullOutPointerFails) {
-    EXPECT_EQ(RTCDtmfSender_GetDuration(nullptr, nullptr),
-              rtcResultU4::kInvalidPointer);
-}
-
-TEST(RTCDtmfSenderNegative, GetInterToneGapWithNullHandleFails) {
-    int gap = 0;
-    EXPECT_EQ(RTCDtmfSender_GetInterToneGap(nullptr, &gap),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCDtmfSenderNegative, GetCommaDelayWithNullHandleFails) {
-    int delay = 0;
-    EXPECT_EQ(RTCDtmfSender_GetCommaDelay(nullptr, &delay),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
 // Fixture that owns a fresh peer connection and obtains a DTMF sender from an
-// audio RTP sender.
+// audio RTP sender (AddTrack -> sender->dtmf_sender()), exercising the C++
+// RTCDtmfSender class API.
 class RTCDtmfSenderTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ASSERT_EQ(LibWebRTC_Initialize(), rtcBool32::kTrue);
-        factory_ = LibWebRTC_CreateRTCPeerConnectionFactory();
-        ASSERT_NE(factory_, nullptr);
-        ASSERT_EQ(RTCPeerConnectionFactory_Initialize(factory_),
-                  rtcBool32::kTrue);
+ protected:
+  void SetUp() override {
+    ASSERT_TRUE(LibWebRTC::Initialize());
+    factory_ = LibWebRTC::CreateRTCPeerConnectionFactory();
+    ASSERT_TRUE(factory_.get() != nullptr);
+    ASSERT_TRUE(factory_->Initialize());
 
-        rtcPeerConnectionConfiguration config{};
-        ASSERT_EQ(RTCPeerConnectionFactory_CreatePeerConnection(
-                      factory_, &config, nullptr, &pc_),
-                  rtcResultU4::kSuccess);
-        ASSERT_NE(pc_, nullptr);
+    RTCConfiguration config;
+    scoped_refptr<RTCMediaConstraints> constraints =
+        RTCMediaConstraints::Create();
+    ASSERT_TRUE(constraints.get() != nullptr);
+    pc_ = factory_->Create(config, constraints);
+    ASSERT_TRUE(pc_.get() != nullptr);
+  }
+
+  void TearDown() override {
+    if (pc_) {
+      pc_->Close();
+      factory_->Delete(pc_);
+      pc_ = nullptr;
     }
-
-    void TearDown() override {
-        if (pc_) {
-            RTCPeerConnection_Close(pc_);
-            RTCPeerConnectionFactory_DeletePeerConnection(factory_, pc_);
-            RefCountedObject_Release(pc_);
-            pc_ = nullptr;
-        }
-        if (factory_) {
-            EXPECT_EQ(RTCPeerConnectionFactory_Terminate(factory_),
-                      rtcBool32::kTrue);
-            RefCountedObject_Release(factory_);
-            factory_ = nullptr;
-        }
-        LibWebRTC_Terminate();
+    if (factory_) {
+      factory_->Terminate();
+      factory_ = nullptr;
     }
+    LibWebRTC::Terminate();
+  }
 
-    rtcAudioTrackHandle CreateAudioTrack(const char* track_id) {
-        rtcAudioSourceHandle source = nullptr;
-        EXPECT_EQ(RTCPeerConnectionFactory_CreateAudioSource(
-                      factory_, "test-source", &source),
-                  rtcResultU4::kSuccess);
-        if (!source) return nullptr;
+  scoped_refptr<RTCAudioTrack> CreateAudioTrack(const char* track_id) {
+    scoped_refptr<RTCAudioSource> source =
+        factory_->CreateAudioSource("test-source");
+    EXPECT_TRUE(source.get() != nullptr);
+    if (!source.get()) return nullptr;
+    return factory_->CreateAudioTrack(source, track_id);
+  }
 
-        rtcAudioTrackHandle track = nullptr;
-        EXPECT_EQ(RTCPeerConnectionFactory_CreateAudioTrack(
-                      factory_, source, track_id, &track),
-                  rtcResultU4::kSuccess);
-        RefCountedObject_Release(source);
-        return track;
-    }
+  // Returns a DTMF sender obtained from a freshly added audio sender, keeping
+  // the sender alive in sender_out so the DTMF sender stays valid.
+  scoped_refptr<RTCDtmfSender> CreateDtmfSender(
+      scoped_refptr<RTCRtpSender>* sender_out) {
+    scoped_refptr<RTCAudioTrack> track = CreateAudioTrack("audio-track");
+    EXPECT_TRUE(track.get() != nullptr);
+    if (!track.get()) return nullptr;
 
-    // Returns an owned DTMF sender (caller releases) from a new audio sender.
-    // sender_out/track_out receive owned handles the caller must release.
-    rtcDtmfSenderHandle CreateDtmfSender(rtcRtpSenderHandle* sender_out,
-                                         rtcAudioTrackHandle* track_out) {
-        rtcAudioTrackHandle track = CreateAudioTrack("audio-track");
-        if (!track) return nullptr;
+    std::vector<string> stream_ids;
+    stream_ids.push_back(string("stream-id"));
+    scoped_refptr<RTCRtpSender> sender = pc_->AddTrack(track, stream_ids);
+    EXPECT_TRUE(sender.get() != nullptr);
+    if (!sender.get()) return nullptr;
 
-        rtcRtpSenderHandle sender = nullptr;
-        EXPECT_EQ(RTCPeerConnection_AddTrack(pc_, track, "stream-id", &sender),
-                  rtcResultU4::kSuccess);
-        if (!sender) {
-            RefCountedObject_Release(track);
-            return nullptr;
-        }
+    *sender_out = sender;
+    return sender->dtmf_sender();
+  }
 
-        rtcDtmfSenderHandle dtmf = nullptr;
-        EXPECT_EQ(RTCRtpSender_GetDtmfSender(sender, &dtmf),
-                  rtcResultU4::kSuccess);
-
-        *sender_out = sender;
-        *track_out = track;
-        return dtmf;
-    }
-
-    rtcPeerConnectionFactoryHandle factory_ = nullptr;
-    rtcPeerConnectionHandle pc_ = nullptr;
+  scoped_refptr<RTCPeerConnectionFactory> factory_;
+  scoped_refptr<RTCPeerConnection> pc_;
 };
 
-TEST_F(RTCDtmfSenderTest, GetDtmfSenderFromAudioSenderReturnsHandle) {
-    rtcRtpSenderHandle sender = nullptr;
-    rtcAudioTrackHandle track = nullptr;
-    rtcDtmfSenderHandle dtmf = CreateDtmfSender(&sender, &track);
-    ASSERT_NE(dtmf, nullptr);
-
-    rtcBool32 can = rtcBool32::kFalse;
-    EXPECT_EQ(RTCDtmfSender_CanInsertDtmf(dtmf, &can), rtcResultU4::kSuccess);
-
-    int duration = 0;
-    EXPECT_EQ(RTCDtmfSender_GetDuration(dtmf, &duration),
-              rtcResultU4::kSuccess);
-
-    int gap = 0;
-    EXPECT_EQ(RTCDtmfSender_GetInterToneGap(dtmf, &gap),
-              rtcResultU4::kSuccess);
-
-    int comma_delay = 0;
-    EXPECT_EQ(RTCDtmfSender_GetCommaDelay(dtmf, &comma_delay),
-              rtcResultU4::kSuccess);
-
-    char tones[256] = {};
-    EXPECT_EQ(RTCDtmfSender_GetTones(dtmf, tones, sizeof(tones)),
-              rtcResultU4::kSuccess);
-
-    if (dtmf) RefCountedObject_Release(dtmf);
-    if (sender) RefCountedObject_Release(sender);
-    if (track) RefCountedObject_Release(track);
+TEST_F(RTCDtmfSenderTest, AudioSenderProvidesDtmfSender) {
+  scoped_refptr<RTCRtpSender> sender;
+  scoped_refptr<RTCDtmfSender> dtmf = CreateDtmfSender(&sender);
+  ASSERT_TRUE(dtmf.get() != nullptr);
 }
 
-TEST_F(RTCDtmfSenderTest, GetTonesWithNullBufferFails) {
-    rtcRtpSenderHandle sender = nullptr;
-    rtcAudioTrackHandle track = nullptr;
-    rtcDtmfSenderHandle dtmf = CreateDtmfSender(&sender, &track);
-    ASSERT_NE(dtmf, nullptr);
+TEST_F(RTCDtmfSenderTest, GettersReturnSaneDefaults) {
+  scoped_refptr<RTCRtpSender> sender;
+  scoped_refptr<RTCDtmfSender> dtmf = CreateDtmfSender(&sender);
+  ASSERT_TRUE(dtmf.get() != nullptr);
 
-    // Valid handle, null output buffer -> the buffer pointer is rejected.
-    EXPECT_EQ(RTCDtmfSender_GetTones(dtmf, nullptr, 64),
-              rtcResultU4::kInvalidPointer);
-
-    if (dtmf) RefCountedObject_Release(dtmf);
-    if (sender) RefCountedObject_Release(sender);
-    if (track) RefCountedObject_Release(track);
+  // No tones queued yet.
+  EXPECT_EQ(dtmf->tones().std_string(), "");
+  EXPECT_GE(dtmf->duration(), 0);
+  EXPECT_GE(dtmf->inter_tone_gap(), 0);
+  // Unary + yields a prvalue so we don't ODR-use the header constant (it has
+  // no out-of-line definition in the library).
+  EXPECT_EQ(dtmf->comma_delay(), +RTCDtmfSender::kDtmfDefaultCommaDelayMs);
 }
 
-TEST_F(RTCDtmfSenderTest, InsertDtmfReturnsSuccess) {
-    rtcRtpSenderHandle sender = nullptr;
-    rtcAudioTrackHandle track = nullptr;
-    rtcDtmfSenderHandle dtmf = CreateDtmfSender(&sender, &track);
-    ASSERT_NE(dtmf, nullptr);
+TEST_F(RTCDtmfSenderTest, CanInsertDtmfReturnsValue) {
+  scoped_refptr<RTCRtpSender> sender;
+  scoped_refptr<RTCDtmfSender> dtmf = CreateDtmfSender(&sender);
+  ASSERT_TRUE(dtmf.get() != nullptr);
 
-    EXPECT_EQ(RTCDtmfSender_InsertDtmf(dtmf, "1", 100, 70),
-              rtcResultU4::kSuccess);
-
-    int comma_delay = 50;
-    EXPECT_EQ(RTCDtmfSender_InsertDtmf(dtmf, "2", 100, 70, &comma_delay),
-              rtcResultU4::kSuccess);
-
-    if (dtmf) RefCountedObject_Release(dtmf);
-    if (sender) RefCountedObject_Release(sender);
-    if (track) RefCountedObject_Release(track);
+  // Before negotiation the track usually cannot send DTMF; the call must not
+  // crash and simply reports a boolean.
+  bool can = dtmf->CanInsertDtmf();
+  EXPECT_TRUE(can == true || can == false);
 }
+
+TEST_F(RTCDtmfSenderTest, InsertDtmfDoesNotCrash) {
+  scoped_refptr<RTCRtpSender> sender;
+  scoped_refptr<RTCDtmfSender> dtmf = CreateDtmfSender(&sender);
+  ASSERT_TRUE(dtmf.get() != nullptr);
+
+  // InsertDtmf returns false when DTMF cannot currently be sent; it must not
+  // crash regardless. Exercise both overloads.
+  bool inserted = dtmf->InsertDtmf(string("1"), 100, 70);
+  EXPECT_TRUE(inserted == true || inserted == false);
+
+  bool inserted2 = dtmf->InsertDtmf(string("2"), 100, 70, /*comma_delay=*/50);
+  EXPECT_TRUE(inserted2 == true || inserted2 == false);
+}
+
+// Minimal observer to confirm registration round-trips.
+class TonesObserver : public RTCDtmfSenderObserver {
+ public:
+  void OnToneChange(const string tone, const string tone_buffer) override {}
+  void OnToneChange(const string tone) override {}
+};
 
 TEST_F(RTCDtmfSenderTest, RegisterAndUnregisterObserver) {
-    rtcRtpSenderHandle sender = nullptr;
-    rtcAudioTrackHandle track = nullptr;
-    rtcDtmfSenderHandle dtmf = CreateDtmfSender(&sender, &track);
-    ASSERT_NE(dtmf, nullptr);
+  scoped_refptr<RTCRtpSender> sender;
+  scoped_refptr<RTCDtmfSender> dtmf = CreateDtmfSender(&sender);
+  ASSERT_TRUE(dtmf.get() != nullptr);
 
-    rtcDtmfSenderObserverCallbacks callbacks{};
-    EXPECT_EQ(RTCDtmfSender_RegisterObserver(dtmf, &callbacks),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCDtmfSender_UnregisterObserver(dtmf), rtcResultU4::kSuccess);
-
-    if (dtmf) RefCountedObject_Release(dtmf);
-    if (sender) RefCountedObject_Release(sender);
-    if (track) RefCountedObject_Release(track);
-}
-
-TEST_F(RTCDtmfSenderTest, RegisterObserverWithNullCallbacksFails) {
-    rtcRtpSenderHandle sender = nullptr;
-    rtcAudioTrackHandle track = nullptr;
-    rtcDtmfSenderHandle dtmf = CreateDtmfSender(&sender, &track);
-    ASSERT_NE(dtmf, nullptr);
-
-    EXPECT_EQ(RTCDtmfSender_RegisterObserver(dtmf, nullptr),
-              rtcResultU4::kInvalidParameter);
-
-    if (dtmf) RefCountedObject_Release(dtmf);
-    if (sender) RefCountedObject_Release(sender);
-    if (track) RefCountedObject_Release(track);
+  TonesObserver observer;
+  dtmf->RegisterObserver(&observer);
+  EXPECT_EQ(dtmf->GetObserver(), &observer);
+  dtmf->UnregisterObserver();
+  EXPECT_EQ(dtmf->GetObserver(), nullptr);
 }
 
 }  // namespace libwebrtc

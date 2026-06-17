@@ -1,377 +1,214 @@
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "test/gmock.h"
 #include "test/gtest.h"
 
 #include "rtc_base/logging.h"
 
-#include "interop_api.h"
+#include "rtc_rtp_sender.h"
+#include "rtc_rtp_receiver.h"
+#include "rtc_rtp_transceiver.h"
+#include "rtc_rtp_parameters.h"
+#include "rtc_media_track.h"
+#include "rtc_media_stream.h"
+#include "rtc_audio_source.h"
+#include "rtc_audio_track.h"
+#include "rtc_dtmf_sender.h"
+#include "rtc_peerconnection.h"
+#include "rtc_peerconnection_factory.h"
+#include "rtc_mediaconstraints.h"
+#include "libwebrtc.h"
 
 namespace libwebrtc {
 
-// --- RTCRtpSender null-handle negatives ---
-
-TEST(RTCRtpSenderNegative, GetTrackWithNullHandleFails) {
-    rtcMediaTrackHandle track = nullptr;
-    EXPECT_EQ(RTCRtpSender_GetTrack(nullptr, &track),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCRtpSenderNegative, GetMediaTypeWithNullHandleFails) {
-    rtcMediaType type{};
-    EXPECT_EQ(RTCRtpSender_GetMediaType(nullptr, &type),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCRtpSenderNegative, GetIdWithNullHandleFails) {
-    char buf[64] = {};
-    EXPECT_EQ(RTCRtpSender_GetId(nullptr, buf, sizeof(buf)),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCRtpSenderNegative, GetSSRCWithNullHandleFails) {
-    unsigned int ssrc = 0;
-    EXPECT_EQ(RTCRtpSender_GetSSRC(nullptr, &ssrc),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCRtpSenderNegative, GetDtmfSenderWithNullHandleFails) {
-    rtcDtmfSenderHandle dtmf = nullptr;
-    EXPECT_EQ(RTCRtpSender_GetDtmfSender(nullptr, &dtmf),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCRtpSenderNegative, ListGetCountWithNullHandleReturnsZero) {
-    EXPECT_EQ(RTCRtpSenderList_GetCount(nullptr), 0);
-}
-
-TEST(RTCRtpSenderNegative, ListGetItemWithNullHandleFails) {
-    rtcRtpSenderHandle item = nullptr;
-    EXPECT_EQ(RTCRtpSenderList_GetItem(nullptr, 0, &item),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-// --- RTCRtpReceiver null-handle negatives ---
-
-TEST(RTCRtpReceiverNegative, GetTrackWithNullHandleFails) {
-    rtcMediaTrackHandle track = nullptr;
-    EXPECT_EQ(RTCRtpReceiver_GetTrack(nullptr, &track),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCRtpReceiverNegative, GetMediaTypeWithNullHandleFails) {
-    rtcMediaType type{};
-    EXPECT_EQ(RTCRtpReceiver_GetMediaType(nullptr, &type),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCRtpReceiverNegative, GetIdWithNullHandleFails) {
-    char buf[64] = {};
-    EXPECT_EQ(RTCRtpReceiver_GetId(nullptr, buf, sizeof(buf)),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCRtpReceiverNegative, RegisterObserverWithNullCallbacksFails) {
-    EXPECT_NE(RTCRtpReceiver_RegisterObserver(nullptr, nullptr),
-              rtcResultU4::kSuccess);
-}
-
-TEST(RTCRtpReceiverNegative, ListGetCountWithNullHandleReturnsZero) {
-    EXPECT_EQ(RTCRtpReceiverList_GetCount(nullptr), 0);
-}
-
-TEST(RTCRtpReceiverNegative, ListGetItemWithNullHandleFails) {
-    rtcRtpReceiverHandle item = nullptr;
-    EXPECT_EQ(RTCRtpReceiverList_GetItem(nullptr, 0, &item),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-// Fixture that owns a fresh peer connection for each test.
+// Exercises the C++ RTCRtpSender and RTCRtpReceiver APIs obtained via
+// pc->AddTrack(...) and pc->AddTransceiver(...).
 class RTCRtpSenderReceiverTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ASSERT_EQ(LibWebRTC_Initialize(), rtcBool32::kTrue);
-        factory_ = LibWebRTC_CreateRTCPeerConnectionFactory();
-        ASSERT_NE(factory_, nullptr);
-        ASSERT_EQ(RTCPeerConnectionFactory_Initialize(factory_),
-                  rtcBool32::kTrue);
+ protected:
+  void SetUp() override {
+    ASSERT_TRUE(LibWebRTC::Initialize());
+    factory_ = LibWebRTC::CreateRTCPeerConnectionFactory();
+    ASSERT_TRUE(factory_.get() != nullptr);
+    ASSERT_TRUE(factory_->Initialize());
 
-        rtcPeerConnectionConfiguration config{};
-        ASSERT_EQ(RTCPeerConnectionFactory_CreatePeerConnection(
-                      factory_, &config, nullptr, &pc_),
-                  rtcResultU4::kSuccess);
-        ASSERT_NE(pc_, nullptr);
+    RTCConfiguration config{};
+    scoped_refptr<RTCMediaConstraints> constraints =
+        RTCMediaConstraints::Create();
+    pc_ = factory_->Create(config, constraints);
+    ASSERT_TRUE(pc_.get() != nullptr);
+  }
+
+  void TearDown() override {
+    if (pc_) {
+      pc_->Close();
+      factory_->Delete(pc_);
+      pc_ = nullptr;
     }
-
-    void TearDown() override {
-        if (pc_) {
-            RTCPeerConnection_Close(pc_);
-            RTCPeerConnectionFactory_DeletePeerConnection(factory_, pc_);
-            RefCountedObject_Release(pc_);
-            pc_ = nullptr;
-        }
-        if (factory_) {
-            EXPECT_EQ(RTCPeerConnectionFactory_Terminate(factory_),
-                      rtcBool32::kTrue);
-            RefCountedObject_Release(factory_);
-            factory_ = nullptr;
-        }
-        LibWebRTC_Terminate();
+    if (factory_) {
+      factory_->Terminate();
+      factory_ = nullptr;
     }
+    LibWebRTC::Terminate();
+  }
 
-    // Creates and owns an audio track so callers can exercise track APIs.
-    rtcAudioTrackHandle CreateAudioTrack(const char* track_id) {
-        rtcAudioSourceHandle source = nullptr;
-        EXPECT_EQ(RTCPeerConnectionFactory_CreateAudioSource(
-                      factory_, "test-source", &source),
-                  rtcResultU4::kSuccess);
-        if (!source) return nullptr;
+  scoped_refptr<RTCAudioTrack> CreateAudioTrack(const string& track_id) {
+    scoped_refptr<RTCAudioSource> source =
+        factory_->CreateAudioSource("test-source");
+    EXPECT_TRUE(source.get() != nullptr);
+    if (!source) return nullptr;
+    return factory_->CreateAudioTrack(source, track_id);
+  }
 
-        rtcAudioTrackHandle track = nullptr;
-        EXPECT_EQ(RTCPeerConnectionFactory_CreateAudioTrack(
-                      factory_, source, track_id, &track),
-                  rtcResultU4::kSuccess);
-        RefCountedObject_Release(source);
-        return track;
-    }
+  scoped_refptr<RTCRtpTransceiver> AddAudioTransceiver() {
+    return pc_->AddTransceiver(RTCMediaType::AUDIO);
+  }
 
-    rtcRtpTransceiverHandle AddAudioTransceiver() {
-        rtcRtpTransceiverHandle transceiver = nullptr;
-        EXPECT_EQ(RTCPeerConnection_AddTransceiver1(
-                      pc_, RTCMediaType::AUDIO, &transceiver),
-                  rtcResultU4::kSuccess);
-        return transceiver;
-    }
-
-    rtcPeerConnectionFactoryHandle factory_ = nullptr;
-    rtcPeerConnectionHandle pc_ = nullptr;
+  scoped_refptr<RTCPeerConnectionFactory> factory_;
+  scoped_refptr<RTCPeerConnection> pc_;
 };
 
-// --- Sender obtained via AddTrack ---
+// --- Sender via AddTrack ---
 
-TEST_F(RTCRtpSenderReceiverTest, SenderGetTrackReturnsTrack) {
-    rtcAudioTrackHandle track = CreateAudioTrack("audio-track");
-    ASSERT_NE(track, nullptr);
+TEST_F(RTCRtpSenderReceiverTest, SenderFromAddTrackExposesTrack) {
+  scoped_refptr<RTCAudioTrack> track = CreateAudioTrack("audio-track");
+  ASSERT_TRUE(track.get() != nullptr);
 
-    rtcRtpSenderHandle sender = nullptr;
-    ASSERT_EQ(RTCPeerConnection_AddTrack(pc_, track, "stream-id", &sender),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(sender, nullptr);
+  std::vector<string> stream_ids;
+  stream_ids.push_back(string("stream-id"));
+  scoped_refptr<RTCRtpSender> sender = pc_->AddTrack(track, stream_ids);
+  ASSERT_TRUE(sender.get() != nullptr);
 
-    rtcMediaTrackHandle sender_track = nullptr;
-    EXPECT_EQ(RTCRtpSender_GetTrack(sender, &sender_track),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(sender_track, nullptr);
-    if (sender_track) RefCountedObject_Release(sender_track);
+  scoped_refptr<RTCMediaTrack> sender_track = sender->track();
+  ASSERT_TRUE(sender_track.get() != nullptr);
+  EXPECT_EQ(sender_track->id().std_string(), track->id().std_string());
+  EXPECT_EQ(sender_track->kind().std_string(), std::string("audio"));
 
-    RefCountedObject_Release(sender);
-    RefCountedObject_Release(track);
+  EXPECT_EQ(sender->media_type(), RTCMediaType::AUDIO);
+  EXPECT_GT(sender->id().std_string().size(), 0u);
 }
 
-TEST_F(RTCRtpSenderReceiverTest, SenderGettersReturnSuccess) {
-    rtcRtpTransceiverHandle transceiver = AddAudioTransceiver();
-    ASSERT_NE(transceiver, nullptr);
+// --- Sender via transceiver ---
 
-    rtcRtpSenderHandle sender = nullptr;
-    ASSERT_EQ(RTCRtpTransceiver_GetSender(transceiver, &sender),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(sender, nullptr);
+TEST_F(RTCRtpSenderReceiverTest, SenderGetters) {
+  scoped_refptr<RTCRtpTransceiver> transceiver = AddAudioTransceiver();
+  ASSERT_TRUE(transceiver.get() != nullptr);
 
-    rtcMediaType type{};
-    EXPECT_EQ(RTCRtpSender_GetMediaType(sender, &type), rtcResultU4::kSuccess);
-    EXPECT_EQ(type, RTCMediaType::AUDIO);
+  scoped_refptr<RTCRtpSender> sender = transceiver->sender();
+  ASSERT_TRUE(sender.get() != nullptr);
 
-    char id[256] = {};
-    EXPECT_EQ(RTCRtpSender_GetId(sender, id, sizeof(id)),
-              rtcResultU4::kSuccess);
+  EXPECT_EQ(sender->media_type(), RTCMediaType::AUDIO);
+  EXPECT_GT(sender->id().std_string().size(), 0u);
 
-    unsigned int ssrc = 0;
-    EXPECT_EQ(RTCRtpSender_GetSSRC(sender, &ssrc), rtcResultU4::kSuccess);
-
-    char stream_ids[256] = {};
-    EXPECT_EQ(RTCRtpSender_GetStreamIds(sender, stream_ids, sizeof(stream_ids)),
-              rtcResultU4::kSuccess);
-
-    RefCountedObject_Release(sender);
-    RefCountedObject_Release(transceiver);
+  // ssrc / stream_ids / init_send_encodings are retrievable.
+  sender->ssrc();
+  sender->stream_ids();
+  sender->init_send_encodings();
 }
 
 TEST_F(RTCRtpSenderReceiverTest, SenderSetStreamIds) {
-    rtcRtpTransceiverHandle transceiver = AddAudioTransceiver();
-    ASSERT_NE(transceiver, nullptr);
+  scoped_refptr<RTCRtpTransceiver> transceiver = AddAudioTransceiver();
+  ASSERT_TRUE(transceiver.get() != nullptr);
 
-    rtcRtpSenderHandle sender = nullptr;
-    ASSERT_EQ(RTCRtpTransceiver_GetSender(transceiver, &sender),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(sender, nullptr);
+  scoped_refptr<RTCRtpSender> sender = transceiver->sender();
+  ASSERT_TRUE(sender.get() != nullptr);
 
-    EXPECT_EQ(RTCRtpSender_SetStreamIds(sender, "s1"), rtcResultU4::kSuccess);
-
-    RefCountedObject_Release(sender);
-    RefCountedObject_Release(transceiver);
+  std::vector<string> ids;
+  ids.push_back(string("s1"));
+  sender->set_stream_ids(ids);
 }
 
-TEST_F(RTCRtpSenderReceiverTest, SenderGetParametersReturnsHandle) {
-    rtcRtpTransceiverHandle transceiver = AddAudioTransceiver();
-    ASSERT_NE(transceiver, nullptr);
+TEST_F(RTCRtpSenderReceiverTest, SenderSetTrack) {
+  scoped_refptr<RTCRtpTransceiver> transceiver = AddAudioTransceiver();
+  ASSERT_TRUE(transceiver.get() != nullptr);
 
-    rtcRtpSenderHandle sender = nullptr;
-    ASSERT_EQ(RTCRtpTransceiver_GetSender(transceiver, &sender),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(sender, nullptr);
+  scoped_refptr<RTCRtpSender> sender = transceiver->sender();
+  ASSERT_TRUE(sender.get() != nullptr);
 
-    rtcRtpParametersHandle params = nullptr;
-    EXPECT_EQ(RTCRtpSender_GetParameters(sender, &params),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(params, nullptr);
+  scoped_refptr<RTCAudioTrack> track = CreateAudioTrack("attached-track");
+  ASSERT_TRUE(track.get() != nullptr);
 
-    if (params) {
-        EXPECT_EQ(RTCRtpSender_SetParameters(sender, params),
-                  rtcResultU4::kSuccess);
-        RefCountedObject_Release(params);
-    }
+  EXPECT_TRUE(sender->set_track(track));
 
-    RefCountedObject_Release(sender);
-    RefCountedObject_Release(transceiver);
+  scoped_refptr<RTCMediaTrack> got = sender->track();
+  ASSERT_TRUE(got.get() != nullptr);
+  EXPECT_EQ(got->id().std_string(), track->id().std_string());
 }
 
-TEST_F(RTCRtpSenderReceiverTest, SenderGetInitEncodingsReturnsHandle) {
-    rtcRtpTransceiverHandle transceiver = AddAudioTransceiver();
-    ASSERT_NE(transceiver, nullptr);
+TEST_F(RTCRtpSenderReceiverTest, SenderParametersRoundTrip) {
+  scoped_refptr<RTCRtpTransceiver> transceiver = AddAudioTransceiver();
+  ASSERT_TRUE(transceiver.get() != nullptr);
 
-    rtcRtpSenderHandle sender = nullptr;
-    ASSERT_EQ(RTCRtpTransceiver_GetSender(transceiver, &sender),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(sender, nullptr);
+  scoped_refptr<RTCRtpSender> sender = transceiver->sender();
+  ASSERT_TRUE(sender.get() != nullptr);
 
-    rtcRtpEncodingParametersListHandle encodings = nullptr;
-    EXPECT_EQ(RTCRtpSender_GetInitEncodings(sender, &encodings),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(encodings, nullptr);
-    if (encodings) RefCountedObject_Release(encodings);
+  scoped_refptr<RTCRtpParameters> params = sender->parameters();
+  ASSERT_TRUE(params.get() != nullptr);
 
-    RefCountedObject_Release(sender);
-    RefCountedObject_Release(transceiver);
+  // Setting back the unmodified parameters should succeed.
+  EXPECT_TRUE(sender->set_parameters(params));
 }
 
-// --- Receiver obtained via transceiver ---
+TEST_F(RTCRtpSenderReceiverTest, SenderDtmfSender) {
+  scoped_refptr<RTCRtpTransceiver> transceiver = AddAudioTransceiver();
+  ASSERT_TRUE(transceiver.get() != nullptr);
 
-TEST_F(RTCRtpSenderReceiverTest, ReceiverGettersReturnSuccess) {
-    rtcRtpTransceiverHandle transceiver = AddAudioTransceiver();
-    ASSERT_NE(transceiver, nullptr);
+  scoped_refptr<RTCRtpSender> sender = transceiver->sender();
+  ASSERT_TRUE(sender.get() != nullptr);
 
-    rtcRtpReceiverHandle receiver = nullptr;
-    ASSERT_EQ(RTCRtpTransceiver_GetReceiver(transceiver, &receiver),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(receiver, nullptr);
-
-    rtcMediaType type{};
-    EXPECT_EQ(RTCRtpReceiver_GetMediaType(receiver, &type),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(type, RTCMediaType::AUDIO);
-
-    char id[256] = {};
-    EXPECT_EQ(RTCRtpReceiver_GetId(receiver, id, sizeof(id)),
-              rtcResultU4::kSuccess);
-
-    rtcMediaTrackHandle track = nullptr;
-    EXPECT_EQ(RTCRtpReceiver_GetTrack(receiver, &track),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(track, nullptr);
-    if (track) RefCountedObject_Release(track);
-
-    rtcRtpParametersHandle params = nullptr;
-    EXPECT_EQ(RTCRtpReceiver_GetParameters(receiver, &params),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(params, nullptr);
-    if (params) RefCountedObject_Release(params);
-
-    rtcMediaStreamListHandle streams = nullptr;
-    EXPECT_EQ(RTCRtpReceiver_GetStreams(receiver, &streams),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(streams, nullptr);
-    if (streams) RefCountedObject_Release(streams);
-
-    RefCountedObject_Release(receiver);
-    RefCountedObject_Release(transceiver);
+  // Audio senders expose a DTMF sender; just confirm the accessor works.
+  sender->dtmf_sender();
 }
 
-TEST_F(RTCRtpSenderReceiverTest, ReceiverRegisterAndUnregisterObserver) {
-    rtcRtpTransceiverHandle transceiver = AddAudioTransceiver();
-    ASSERT_NE(transceiver, nullptr);
+// --- Receiver via transceiver ---
 
-    rtcRtpReceiverHandle receiver = nullptr;
-    ASSERT_EQ(RTCRtpTransceiver_GetReceiver(transceiver, &receiver),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(receiver, nullptr);
+TEST_F(RTCRtpSenderReceiverTest, ReceiverGetters) {
+  scoped_refptr<RTCRtpTransceiver> transceiver = AddAudioTransceiver();
+  ASSERT_TRUE(transceiver.get() != nullptr);
 
-    rtcRtpReceiverObserverCallbacks callbacks{};
-    EXPECT_EQ(RTCRtpReceiver_RegisterObserver(receiver, &callbacks),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCRtpReceiver_UnregisterObserver(receiver),
-              rtcResultU4::kSuccess);
+  scoped_refptr<RTCRtpReceiver> receiver = transceiver->receiver();
+  ASSERT_TRUE(receiver.get() != nullptr);
 
-    RefCountedObject_Release(receiver);
-    RefCountedObject_Release(transceiver);
+  EXPECT_EQ(receiver->media_type(), RTCMediaType::AUDIO);
+  EXPECT_GT(receiver->id().std_string().size(), 0u);
+
+  scoped_refptr<RTCMediaTrack> track = receiver->track();
+  ASSERT_TRUE(track.get() != nullptr);
+  EXPECT_EQ(track->kind().std_string(), std::string("audio"));
+
+  scoped_refptr<RTCRtpParameters> params = receiver->parameters();
+  EXPECT_TRUE(params.get() != nullptr);
+
+  // streams() and stream_ids() are retrievable (may be empty pre-negotiation).
+  receiver->streams();
+  receiver->stream_ids();
 }
 
-// --- List getters via GetSenders / GetReceivers ---
+// --- List getters ---
 
-TEST_F(RTCRtpSenderReceiverTest, GetSendersListCountAndItem) {
-    rtcRtpTransceiverHandle transceiver = AddAudioTransceiver();
-    ASSERT_NE(transceiver, nullptr);
-    RefCountedObject_Release(transceiver);
+TEST_F(RTCRtpSenderReceiverTest, GetSendersListsSender) {
+  scoped_refptr<RTCRtpTransceiver> transceiver = AddAudioTransceiver();
+  ASSERT_TRUE(transceiver.get() != nullptr);
 
-    rtcRtpSenderListHandle list = nullptr;
-    EXPECT_EQ(RTCPeerConnection_GetSenders(pc_, &list), rtcResultU4::kSuccess);
-    ASSERT_NE(list, nullptr);
+  vector<scoped_refptr<RTCRtpSender>> senders = pc_->senders();
+  ASSERT_GE(senders.size(), 1u);
 
-    int count = RTCRtpSenderList_GetCount(list);
-    EXPECT_GE(count, 1);
-
-    rtcRtpSenderHandle item = nullptr;
-    EXPECT_EQ(RTCRtpSenderList_GetItem(list, 0, &item), rtcResultU4::kSuccess);
-    EXPECT_NE(item, nullptr);
-    if (item) RefCountedObject_Release(item);
-
-    rtcRtpSenderHandle oob = nullptr;
-    EXPECT_EQ(RTCRtpSenderList_GetItem(list, count, &oob),
-              rtcResultU4::kOutOfRange);
-    EXPECT_EQ(oob, nullptr);
-
-    RefCountedObject_Release(list);
+  scoped_refptr<RTCRtpSender> first = senders[0];
+  ASSERT_TRUE(first.get() != nullptr);
+  EXPECT_EQ(first->media_type(), RTCMediaType::AUDIO);
 }
 
-TEST_F(RTCRtpSenderReceiverTest, GetReceiversListCountAndItem) {
-    rtcRtpTransceiverHandle transceiver = AddAudioTransceiver();
-    ASSERT_NE(transceiver, nullptr);
-    RefCountedObject_Release(transceiver);
+TEST_F(RTCRtpSenderReceiverTest, GetReceiversListsReceiver) {
+  scoped_refptr<RTCRtpTransceiver> transceiver = AddAudioTransceiver();
+  ASSERT_TRUE(transceiver.get() != nullptr);
 
-    rtcRtpReceiverListHandle list = nullptr;
-    EXPECT_EQ(RTCPeerConnection_GetReceivers(pc_, &list),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(list, nullptr);
+  vector<scoped_refptr<RTCRtpReceiver>> receivers = pc_->receivers();
+  ASSERT_GE(receivers.size(), 1u);
 
-    int count = RTCRtpReceiverList_GetCount(list);
-    EXPECT_GE(count, 1);
-
-    rtcRtpReceiverHandle item = nullptr;
-    EXPECT_EQ(RTCRtpReceiverList_GetItem(list, 0, &item),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(item, nullptr);
-    if (item) RefCountedObject_Release(item);
-
-    rtcRtpReceiverHandle oob = nullptr;
-    EXPECT_EQ(RTCRtpReceiverList_GetItem(list, count, &oob),
-              rtcResultU4::kOutOfRange);
-    EXPECT_EQ(oob, nullptr);
-
-    rtcRtpReceiverHandle neg = nullptr;
-    EXPECT_EQ(RTCRtpReceiverList_GetItem(list, -1, &neg),
-              rtcResultU4::kOutOfRange);
-
-    RefCountedObject_Release(list);
+  scoped_refptr<RTCRtpReceiver> first = receivers[0];
+  ASSERT_TRUE(first.get() != nullptr);
+  EXPECT_EQ(first->media_type(), RTCMediaType::AUDIO);
 }
 
 }  // namespace libwebrtc

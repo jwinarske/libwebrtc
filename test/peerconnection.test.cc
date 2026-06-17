@@ -1,551 +1,316 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "test/gmock.h"
 #include "test/gtest.h"
 
 #include "rtc_base/logging.h"
 
-#include "interop_api.h"
+#include "rtc_peerconnection_factory.h"
+#include "rtc_peerconnection.h"
+#include "rtc_audio_source.h"
+#include "rtc_audio_track.h"
+#include "rtc_data_channel.h"
+#include "rtc_media_stream.h"
+#include "rtc_mediaconstraints.h"
+#include "rtc_rtp_sender.h"
+#include "rtc_rtp_receiver.h"
+#include "rtc_rtp_transceiver.h"
+#include "libwebrtc.h"
 
 namespace libwebrtc {
 namespace {
 
-// A simple latch usable from any thread to wait for an SDP/stats callback.
+// A simple latch usable from any thread to wait for an SDP callback.
 class CallbackLatch {
-public:
-    void Signal() {
-        std::lock_guard<std::mutex> lock(mu_);
-        signaled_ = true;
-        cv_.notify_all();
-    }
-    bool WaitFor(std::chrono::milliseconds timeout) {
-        std::unique_lock<std::mutex> lock(mu_);
-        return cv_.wait_for(lock, timeout, [&] { return signaled_; });
-    }
+ public:
+  void Signal() {
+    std::lock_guard<std::mutex> lock(mu_);
+    signaled_ = true;
+    cv_.notify_all();
+  }
+  bool WaitFor(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mu_);
+    return cv_.wait_for(lock, timeout, [&] { return signaled_; });
+  }
 
-private:
-    std::mutex mu_;
-    std::condition_variable cv_;
-    bool signaled_ = false;
+ private:
+  std::mutex mu_;
+  std::condition_variable cv_;
+  bool signaled_ = false;
 };
 
 struct OfferAnswerResult {
-    CallbackLatch latch;
-    std::string sdp;
-    std::string type;
-    std::string error;
-    bool succeeded = false;
+  CallbackLatch latch;
+  std::string sdp;
+  std::string type;
+  std::string error;
+  bool succeeded = false;
 };
-
-void LIB_WEBRTC_CALL OnGetSdpSuccess(rtcObjectHandle user_data,
-                                     const char* sdp,
-                                     const char* type) {
-    auto* result = static_cast<OfferAnswerResult*>(user_data);
-    if (sdp) result->sdp = sdp;
-    if (type) result->type = type;
-    result->succeeded = true;
-    result->latch.Signal();
-}
-
-void LIB_WEBRTC_CALL OnSdpFailure(rtcObjectHandle user_data,
-                                  const char* error) {
-    auto* result = static_cast<OfferAnswerResult*>(user_data);
-    if (error) result->error = error;
-    result->succeeded = false;
-    result->latch.Signal();
-}
-
-void LIB_WEBRTC_CALL OnSetSdpSuccess(rtcObjectHandle user_data) {
-    auto* result = static_cast<OfferAnswerResult*>(user_data);
-    result->succeeded = true;
-    result->latch.Signal();
-}
-
-void LIB_WEBRTC_CALL OnStatsSuccess(rtcObjectHandle user_data,
-                                    rtcMediaRTCStatsListHandle reports) {
-    auto* latch = static_cast<CallbackLatch*>(user_data);
-    if (reports) RefCountedObject_Release(reports);
-    latch->Signal();
-}
 
 }  // namespace
 
-// Negative-path tests that don't need a peer connection.
-
-TEST(RTCPeerConnectionNegative, IsInitializedWithNullHandleFails) {
-    rtcBool32 init = rtcBool32::kTrue;
-    EXPECT_NE(RTCPeerConnection_IsInitialized(nullptr, &init),
-              rtcResultU4::kSuccess);
-}
-
-TEST(RTCPeerConnectionNegative, AddStreamWithNullHandleFails) {
-    int dummy = 0;
-    EXPECT_NE(RTCPeerConnection_AddStream(nullptr, nullptr, &dummy),
-              rtcResultU4::kSuccess);
-}
-
-TEST(RTCPeerConnectionNegative, GetSignalingStateWithNullHandleFails) {
-    rtcSignalingState state{};
-    EXPECT_NE(RTCPeerConnection_GetSignalingState(nullptr, &state),
-              rtcResultU4::kSuccess);
-}
-
-// Fixture that owns a fresh peer connection for each test.
+// Fixture that owns a fresh peer connection for each test. Mirrors
+// test/c_interop/peerconnection.test.cc using the C++ class API.
 class RTCPeerConnectionTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ASSERT_EQ(LibWebRTC_Initialize(), rtcBool32::kTrue);
-        factory_ = LibWebRTC_CreateRTCPeerConnectionFactory();
-        ASSERT_NE(factory_, nullptr);
-        ASSERT_EQ(RTCPeerConnectionFactory_Initialize(factory_),
-                  rtcBool32::kTrue);
+ protected:
+  void SetUp() override {
+    ASSERT_TRUE(LibWebRTC::Initialize());
+    factory_ = LibWebRTC::CreateRTCPeerConnectionFactory();
+    ASSERT_TRUE(factory_.get() != nullptr);
+    ASSERT_TRUE(factory_->Initialize());
 
-        rtcPeerConnectionConfiguration config{};
-        ASSERT_EQ(RTCPeerConnectionFactory_CreatePeerConnection(
-                      factory_, &config, nullptr, &pc_),
-                  rtcResultU4::kSuccess);
-        ASSERT_NE(pc_, nullptr);
+    RTCConfiguration config;
+    constraints_ = RTCMediaConstraints::Create();
+    ASSERT_TRUE(constraints_.get() != nullptr);
+    pc_ = factory_->Create(config, constraints_);
+    ASSERT_TRUE(pc_.get() != nullptr);
+  }
+
+  void TearDown() override {
+    if (pc_) {
+      pc_->Close();
+      factory_->Delete(pc_);
+      pc_ = nullptr;
     }
-
-    void TearDown() override {
-        if (pc_) {
-            RTCPeerConnection_Close(pc_);
-            RTCPeerConnectionFactory_DeletePeerConnection(factory_, pc_);
-            RefCountedObject_Release(pc_);
-            pc_ = nullptr;
-        }
-        if (factory_) {
-            EXPECT_EQ(RTCPeerConnectionFactory_Terminate(factory_),
-                      rtcBool32::kTrue);
-            RefCountedObject_Release(factory_);
-            factory_ = nullptr;
-        }
-        LibWebRTC_Terminate();
+    constraints_ = nullptr;
+    if (factory_) {
+      EXPECT_TRUE(factory_->Terminate());
+      factory_ = nullptr;
     }
+    LibWebRTC::Terminate();
+  }
 
-    // Creates and owns an audio track so callers can exercise track APIs.
-    rtcAudioTrackHandle CreateAudioTrack(const char* track_id) {
-        rtcAudioSourceHandle source = nullptr;
-        EXPECT_EQ(RTCPeerConnectionFactory_CreateAudioSource(
-                      factory_, "test-source", &source),
-                  rtcResultU4::kSuccess);
-        if (!source) return nullptr;
+  scoped_refptr<RTCAudioTrack> CreateAudioTrack(const string track_id) {
+    scoped_refptr<RTCAudioSource> source =
+        factory_->CreateAudioSource("test-source");
+    EXPECT_TRUE(source.get() != nullptr);
+    if (!source) return scoped_refptr<RTCAudioTrack>();
+    return factory_->CreateAudioTrack(source, track_id);
+  }
 
-        rtcAudioTrackHandle track = nullptr;
-        EXPECT_EQ(RTCPeerConnectionFactory_CreateAudioTrack(
-                      factory_, source, track_id, &track),
-                  rtcResultU4::kSuccess);
-        RefCountedObject_Release(source);
-        return track;
-    }
-
-    rtcPeerConnectionFactoryHandle factory_ = nullptr;
-    rtcPeerConnectionHandle pc_ = nullptr;
+  scoped_refptr<RTCPeerConnectionFactory> factory_;
+  scoped_refptr<RTCMediaConstraints> constraints_;
+  scoped_refptr<RTCPeerConnection> pc_;
 };
 
 // --- State queries ---
 
 TEST_F(RTCPeerConnectionTest, IsInitializedReturnsTrue) {
-    rtcBool32 initialized = rtcBool32::kFalse;
-    EXPECT_EQ(RTCPeerConnection_IsInitialized(pc_, &initialized),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(initialized, rtcBool32::kTrue);
+  EXPECT_TRUE(pc_->IsInitialized());
 }
 
 TEST_F(RTCPeerConnectionTest, InitialSignalingStateIsStable) {
-    rtcSignalingState state{};
-    EXPECT_EQ(RTCPeerConnection_GetSignalingState(pc_, &state),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(state, rtcSignalingState::kStable);
+  EXPECT_EQ(pc_->signaling_state(), RTCSignalingStateStable);
 }
 
 TEST_F(RTCPeerConnectionTest, InitialIceConnectionStateIsNew) {
-    rtcIceConnectionState state{};
-    EXPECT_EQ(RTCPeerConnection_GetIceConnectionState(pc_, &state),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(state, rtcIceConnectionState::kNew);
-}
-
-TEST_F(RTCPeerConnectionTest, InitialStandardizedIceConnectionStateIsNew) {
-    rtcIceConnectionState state{};
-    EXPECT_EQ(
-        RTCPeerConnection_GetStandardizedIceConnectionState(pc_, &state),
-        rtcResultU4::kSuccess);
-    EXPECT_EQ(state, rtcIceConnectionState::kNew);
+  EXPECT_EQ(pc_->ice_connection_state(), RTCIceConnectionStateNew);
+  EXPECT_EQ(pc_->standardized_ice_connection_state(),
+            RTCIceConnectionStateNew);
 }
 
 TEST_F(RTCPeerConnectionTest, InitialPeerConnectionStateIsNew) {
-    rtcPeerConnectionState state{};
-    EXPECT_EQ(RTCPeerConnection_GetPeerConnectionState(pc_, &state),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(state, rtcPeerConnectionState::kNew);
+  EXPECT_EQ(pc_->peer_connection_state(), RTCPeerConnectionStateNew);
 }
 
 TEST_F(RTCPeerConnectionTest, InitialIceGatheringStateIsNew) {
-    rtcIceGatheringState state{};
-    EXPECT_EQ(RTCPeerConnection_GetIceGatheringState(pc_, &state),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(state, rtcIceGatheringState::kNew);
+  EXPECT_EQ(pc_->ice_gathering_state(), RTCIceGatheringStateNew);
 }
 
 // --- Stream / data channel ---
 
-TEST_F(RTCPeerConnectionTest, CreateLocalMediaStreamReturnsHandle) {
-    rtcMediaStreamHandle stream = nullptr;
-    EXPECT_EQ(RTCPeerConnection_CreateLocalMediaStream(pc_, "stream-1", &stream),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(stream, nullptr);
-    if (stream) RefCountedObject_Release(stream);
+TEST_F(RTCPeerConnectionTest, CreateLocalMediaStreamReturnsObject) {
+  scoped_refptr<RTCMediaStream> stream = pc_->CreateLocalMediaStream("stream-1");
+  EXPECT_NE(stream.get(), nullptr);
 }
 
 TEST_F(RTCPeerConnectionTest, CreateDataChannelDefault) {
-    rtcDataChannelHandle dc = nullptr;
-    EXPECT_EQ(RTCPeerConnection_CreateDataChannel(pc_, "data", nullptr, &dc),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(dc, nullptr);
-    if (dc) RefCountedObject_Release(dc);
+  RTCDataChannelInit init;
+  scoped_refptr<RTCDataChannel> dc = pc_->CreateDataChannel("data", &init);
+  EXPECT_NE(dc.get(), nullptr);
 }
 
 TEST_F(RTCPeerConnectionTest, CreateDataChannelWithInit) {
-    rtcDataChannelInit init{};
-    init.ordered = rtcBool32::kTrue;
-    init.maxRetransmits = 3;
-
-    rtcDataChannelHandle dc = nullptr;
-    EXPECT_EQ(RTCPeerConnection_CreateDataChannel(pc_, "data", &init, &dc),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(dc, nullptr);
-    if (dc) RefCountedObject_Release(dc);
-}
-
-TEST_F(RTCPeerConnectionTest, AddStreamWithNullStreamFails) {
-    int retval = 0;
-    EXPECT_NE(RTCPeerConnection_AddStream(pc_, nullptr, &retval),
-              rtcResultU4::kSuccess);
-}
-
-TEST_F(RTCPeerConnectionTest, RemoveStreamWithNullStreamFails) {
-    int retval = 0;
-    EXPECT_NE(RTCPeerConnection_RemoveStream(pc_, nullptr, &retval),
-              rtcResultU4::kSuccess);
+  RTCDataChannelInit init;
+  init.ordered = true;
+  init.maxRetransmits = 3;
+  scoped_refptr<RTCDataChannel> dc = pc_->CreateDataChannel("data", &init);
+  EXPECT_NE(dc.get(), nullptr);
 }
 
 // --- Transceivers / tracks ---
 
-TEST_F(RTCPeerConnectionTest, AddTransceiver1Audio) {
-    rtcRtpTransceiverHandle transceiver = nullptr;
-    EXPECT_EQ(RTCPeerConnection_AddTransceiver1(
-                  pc_, RTCMediaType::AUDIO, &transceiver),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(transceiver, nullptr);
-    if (transceiver) RefCountedObject_Release(transceiver);
+TEST_F(RTCPeerConnectionTest, AddTransceiverAudio) {
+  scoped_refptr<RTCRtpTransceiver> transceiver =
+      pc_->AddTransceiver(RTCMediaType::AUDIO);
+  EXPECT_NE(transceiver.get(), nullptr);
 }
 
-TEST_F(RTCPeerConnectionTest, AddTransceiver1Video) {
-    rtcRtpTransceiverHandle transceiver = nullptr;
-    EXPECT_EQ(RTCPeerConnection_AddTransceiver1(
-                  pc_, RTCMediaType::VIDEO, &transceiver),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(transceiver, nullptr);
-    if (transceiver) RefCountedObject_Release(transceiver);
+TEST_F(RTCPeerConnectionTest, AddTransceiverVideo) {
+  scoped_refptr<RTCRtpTransceiver> transceiver =
+      pc_->AddTransceiver(RTCMediaType::VIDEO);
+  EXPECT_NE(transceiver.get(), nullptr);
 }
 
-TEST_F(RTCPeerConnectionTest, AddTransceiver2WithNullTrackFails) {
-    rtcRtpTransceiverHandle transceiver = nullptr;
-    EXPECT_NE(RTCPeerConnection_AddTransceiver2(pc_, nullptr, &transceiver),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(transceiver, nullptr);
-}
+TEST_F(RTCPeerConnectionTest, AddTransceiverWithTrack) {
+  scoped_refptr<RTCAudioTrack> track = CreateAudioTrack("audio-track");
+  ASSERT_TRUE(track.get() != nullptr);
 
-TEST_F(RTCPeerConnectionTest, AddTransceiver3WithNullParamsFails) {
-    rtcRtpTransceiverHandle transceiver = nullptr;
-    EXPECT_NE(
-        RTCPeerConnection_AddTransceiver3(pc_, nullptr, nullptr, &transceiver),
-        rtcResultU4::kSuccess);
-    EXPECT_EQ(transceiver, nullptr);
-}
-
-TEST_F(RTCPeerConnectionTest, AddTrackWithNullTrackFails) {
-    rtcRtpSenderHandle sender = nullptr;
-    EXPECT_NE(RTCPeerConnection_AddTrack(pc_, nullptr, "", &sender),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(sender, nullptr);
+  scoped_refptr<RTCRtpTransceiver> transceiver = pc_->AddTransceiver(track);
+  EXPECT_NE(transceiver.get(), nullptr);
 }
 
 TEST_F(RTCPeerConnectionTest, AddTrackAudioReturnsSender) {
-    rtcAudioTrackHandle track = CreateAudioTrack("audio-track");
-    ASSERT_NE(track, nullptr);
+  scoped_refptr<RTCAudioTrack> track = CreateAudioTrack("audio-track");
+  ASSERT_TRUE(track.get() != nullptr);
 
-    rtcRtpSenderHandle sender = nullptr;
-    EXPECT_EQ(RTCPeerConnection_AddTrack(pc_, track, "stream-id", &sender),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(sender, nullptr);
-
-    if (sender) RefCountedObject_Release(sender);
-    RefCountedObject_Release(track);
-}
-
-TEST_F(RTCPeerConnectionTest, RemoveTrackWithNullSenderFails) {
-    rtcBool32 retval = rtcBool32::kTrue;
-    EXPECT_NE(RTCPeerConnection_RemoveTrack(pc_, nullptr, &retval),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(retval, rtcBool32::kFalse);
+  std::vector<string> stream_ids;
+  stream_ids.push_back(string("stream-id"));
+  scoped_refptr<RTCRtpSender> sender = pc_->AddTrack(track, stream_ids);
+  EXPECT_NE(sender.get(), nullptr);
 }
 
 // --- List getters ---
 
-TEST_F(RTCPeerConnectionTest, GetSendersReturnsHandle) {
-    rtcRtpSenderListHandle list = nullptr;
-    EXPECT_EQ(RTCPeerConnection_GetSenders(pc_, &list), rtcResultU4::kSuccess);
-    EXPECT_NE(list, nullptr);
-    if (list) RefCountedObject_Release(list);
+TEST_F(RTCPeerConnectionTest, GetSendersReturnsList) {
+  vector<scoped_refptr<RTCRtpSender>> senders = pc_->senders();
+  EXPECT_EQ(senders.size(), 0u);
+
+  scoped_refptr<RTCAudioTrack> track = CreateAudioTrack("audio-track");
+  ASSERT_TRUE(track.get() != nullptr);
+  std::vector<string> stream_ids;
+  stream_ids.push_back(string("stream-id"));
+  pc_->AddTrack(track, stream_ids);
+
+  senders = pc_->senders();
+  EXPECT_EQ(senders.size(), 1u);
 }
 
-TEST_F(RTCPeerConnectionTest, GetReceiversReturnsHandle) {
-    rtcRtpReceiverListHandle list = nullptr;
-    EXPECT_EQ(RTCPeerConnection_GetReceivers(pc_, &list),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(list, nullptr);
-    if (list) RefCountedObject_Release(list);
+TEST_F(RTCPeerConnectionTest, GetReceiversReturnsList) {
+  vector<scoped_refptr<RTCRtpReceiver>> receivers = pc_->receivers();
+  EXPECT_EQ(receivers.size(), 0u);
 }
 
-TEST_F(RTCPeerConnectionTest, GetTransceiversReturnsHandle) {
-    rtcRtpTransceiverListHandle list = nullptr;
-    EXPECT_EQ(RTCPeerConnection_GetTransceivers(pc_, &list),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(list, nullptr);
-    if (list) RefCountedObject_Release(list);
+TEST_F(RTCPeerConnectionTest, GetTransceiversReturnsList) {
+  vector<scoped_refptr<RTCRtpTransceiver>> transceivers = pc_->transceivers();
+  EXPECT_EQ(transceivers.size(), 0u);
+
+  pc_->AddTransceiver(RTCMediaType::AUDIO);
+  transceivers = pc_->transceivers();
+  EXPECT_EQ(transceivers.size(), 1u);
 }
 
-TEST_F(RTCPeerConnectionTest, GetLocalStreamsReturnsHandle) {
-    rtcMediaStreamListHandle list = nullptr;
-    EXPECT_EQ(RTCPeerConnection_GetLocalStreams(pc_, &list),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(list, nullptr);
-    if (list) RefCountedObject_Release(list);
+TEST_F(RTCPeerConnectionTest, GetLocalStreamsReturnsList) {
+  vector<scoped_refptr<RTCMediaStream>> streams = pc_->local_streams();
+  EXPECT_EQ(streams.size(), 0u);
 }
 
-TEST_F(RTCPeerConnectionTest, GetRemoteStreamsReturnsHandle) {
-    rtcMediaStreamListHandle list = nullptr;
-    EXPECT_EQ(RTCPeerConnection_GetRemoteStreams(pc_, &list),
-              rtcResultU4::kSuccess);
-    EXPECT_NE(list, nullptr);
-    if (list) RefCountedObject_Release(list);
-}
-
-// --- SDP / stats negative paths ---
-
-TEST_F(RTCPeerConnectionTest, CreateOfferRejectsNullCallbacksAndConstraints) {
-    rtcMediaConstraintsHandle constraints = MediaConstraints_Create();
-    ASSERT_NE(constraints, nullptr);
-
-    EXPECT_EQ(RTCPeerConnection_CreateOffer(pc_, nullptr, nullptr,
-                                            &OnSdpFailure, constraints),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCPeerConnection_CreateOffer(pc_, nullptr, &OnGetSdpSuccess,
-                                            nullptr, constraints),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCPeerConnection_CreateOffer(pc_, nullptr, &OnGetSdpSuccess,
-                                            &OnSdpFailure, nullptr),
-              rtcResultU4::kInvalidParameter);
-
-    RefCountedObject_Release(constraints);
-}
-
-TEST_F(RTCPeerConnectionTest, CreateAnswerRejectsNullCallbacksAndConstraints) {
-    rtcMediaConstraintsHandle constraints = MediaConstraints_Create();
-    ASSERT_NE(constraints, nullptr);
-
-    EXPECT_EQ(RTCPeerConnection_CreateAnswer(pc_, nullptr, nullptr,
-                                             &OnSdpFailure, constraints),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCPeerConnection_CreateAnswer(pc_, nullptr, &OnGetSdpSuccess,
-                                             nullptr, constraints),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCPeerConnection_CreateAnswer(pc_, nullptr, &OnGetSdpSuccess,
-                                             &OnSdpFailure, nullptr),
-              rtcResultU4::kInvalidParameter);
-
-    RefCountedObject_Release(constraints);
-}
-
-TEST_F(RTCPeerConnectionTest, SetLocalDescriptionRejectsNullCallbacks) {
-    EXPECT_EQ(RTCPeerConnection_SetLocalDescription(pc_, "", "offer", nullptr,
-                                                    nullptr, &OnSdpFailure),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCPeerConnection_SetLocalDescription(
-                  pc_, "", "offer", nullptr, &OnSetSdpSuccess, nullptr),
-              rtcResultU4::kInvalidParameter);
-}
-
-TEST_F(RTCPeerConnectionTest, SetRemoteDescriptionRejectsNullCallbacks) {
-    EXPECT_EQ(RTCPeerConnection_SetRemoteDescription(pc_, "", "offer", nullptr,
-                                                     nullptr, &OnSdpFailure),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCPeerConnection_SetRemoteDescription(
-                  pc_, "", "offer", nullptr, &OnSetSdpSuccess, nullptr),
-              rtcResultU4::kInvalidParameter);
-}
-
-TEST_F(RTCPeerConnectionTest, GetLocalDescriptionRejectsNullCallbacks) {
-    EXPECT_EQ(RTCPeerConnection_GetLocalDescription(pc_, nullptr, nullptr,
-                                                    &OnSdpFailure),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCPeerConnection_GetLocalDescription(pc_, nullptr,
-                                                    &OnGetSdpSuccess, nullptr),
-              rtcResultU4::kInvalidParameter);
-}
-
-TEST_F(RTCPeerConnectionTest, GetRemoteDescriptionRejectsNullCallbacks) {
-    EXPECT_EQ(RTCPeerConnection_GetRemoteDescription(pc_, nullptr, nullptr,
-                                                     &OnSdpFailure),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCPeerConnection_GetRemoteDescription(pc_, nullptr,
-                                                     &OnGetSdpSuccess, nullptr),
-              rtcResultU4::kInvalidParameter);
-}
-
-TEST_F(RTCPeerConnectionTest, GetStatsRejectsNullCallbacks) {
-    EXPECT_EQ(RTCPeerConnection_GetStats(pc_, nullptr, nullptr, &OnSdpFailure),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCPeerConnection_GetStats(pc_, nullptr, &OnStatsSuccess, nullptr),
-              rtcResultU4::kInvalidParameter);
-}
-
-TEST_F(RTCPeerConnectionTest, GetSenderStatsRejectsNullSender) {
-    rtcBool32 retval = rtcBool32::kTrue;
-    EXPECT_EQ(RTCPeerConnection_GetSenderStats(pc_, nullptr, nullptr,
-                                               &OnStatsSuccess, &OnSdpFailure,
-                                               &retval),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(retval, rtcBool32::kFalse);
-}
-
-TEST_F(RTCPeerConnectionTest, GetReceiverStatsRejectsNullReceiver) {
-    rtcBool32 retval = rtcBool32::kTrue;
-    EXPECT_EQ(RTCPeerConnection_GetReceiverStats(pc_, nullptr, nullptr,
-                                                 &OnStatsSuccess, &OnSdpFailure,
-                                                 &retval),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(retval, rtcBool32::kFalse);
+TEST_F(RTCPeerConnectionTest, GetRemoteStreamsReturnsList) {
+  vector<scoped_refptr<RTCMediaStream>> streams = pc_->remote_streams();
+  EXPECT_EQ(streams.size(), 0u);
 }
 
 // --- Misc ---
 
-TEST_F(RTCPeerConnectionTest, RestartIceSucceeds) {
-    EXPECT_EQ(RTCPeerConnection_RestartIce(pc_), rtcResultU4::kSuccess);
+TEST_F(RTCPeerConnectionTest, RestartIceDoesNotCrash) {
+  pc_->RestartIce();
 }
 
 TEST_F(RTCPeerConnectionTest, AddCandidateAcceptsParameters) {
-    EXPECT_EQ(RTCPeerConnection_AddCandidate(pc_, "0", 0, ""),
-              rtcResultU4::kSuccess);
-}
-
-TEST_F(RTCPeerConnectionTest, RegisterAndUnregisterObserver) {
-    rtcPeerConnectionObserverCallbacks callbacks{};
-    EXPECT_EQ(RTCPeerConnection_RegisterObserver(pc_, &callbacks),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCPeerConnection_UnregisterObserver(pc_),
-              rtcResultU4::kSuccess);
-}
-
-TEST_F(RTCPeerConnectionTest, RegisterObserverWithNullCallbacksFails) {
-    EXPECT_NE(RTCPeerConnection_RegisterObserver(pc_, nullptr),
-              rtcResultU4::kSuccess);
+  // No remote description set; this just verifies the call is accepted.
+  pc_->AddCandidate("0", 0, "");
 }
 
 // --- Async round trip: CreateOffer + SetLocalDescription ---
 
 TEST_F(RTCPeerConnectionTest, CreateOfferProducesSdp) {
-    // Add a transceiver so the offer has at least one m-line.
-    rtcRtpTransceiverHandle transceiver = nullptr;
-    ASSERT_EQ(RTCPeerConnection_AddTransceiver1(
-                  pc_, RTCMediaType::AUDIO, &transceiver),
-              rtcResultU4::kSuccess);
-    if (transceiver) RefCountedObject_Release(transceiver);
+  // Add a transceiver so the offer has at least one m-line.
+  scoped_refptr<RTCRtpTransceiver> transceiver =
+      pc_->AddTransceiver(RTCMediaType::AUDIO);
+  ASSERT_TRUE(transceiver.get() != nullptr);
 
-    rtcMediaConstraintsHandle constraints = MediaConstraints_Create();
-    ASSERT_NE(constraints, nullptr);
+  scoped_refptr<RTCMediaConstraints> constraints = RTCMediaConstraints::Create();
+  ASSERT_TRUE(constraints.get() != nullptr);
 
-    OfferAnswerResult offer;
-    ASSERT_EQ(RTCPeerConnection_CreateOffer(pc_, &offer, &OnGetSdpSuccess,
-                                            &OnSdpFailure, constraints),
-              rtcResultU4::kSuccess);
+  OfferAnswerResult offer;
+  pc_->CreateOffer(
+      [&offer](const string sdp, const string type) {
+        offer.sdp = sdp.std_string();
+        offer.type = type.std_string();
+        offer.succeeded = true;
+        offer.latch.Signal();
+      },
+      [&offer](const char* error) {
+        if (error) offer.error = error;
+        offer.succeeded = false;
+        offer.latch.Signal();
+      },
+      constraints);
 
-    ASSERT_TRUE(offer.latch.WaitFor(std::chrono::seconds(5)))
-        << "CreateOffer callback was not invoked";
-    EXPECT_TRUE(offer.succeeded) << "CreateOffer failed: " << offer.error;
-    EXPECT_FALSE(offer.sdp.empty());
-    EXPECT_EQ(offer.type, "offer");
-
-    RefCountedObject_Release(constraints);
+  ASSERT_TRUE(offer.latch.WaitFor(std::chrono::seconds(5)))
+      << "CreateOffer callback was not invoked";
+  EXPECT_TRUE(offer.succeeded) << "CreateOffer failed: " << offer.error;
+  EXPECT_FALSE(offer.sdp.empty());
+  EXPECT_EQ(offer.type, "offer");
 }
 
 TEST_F(RTCPeerConnectionTest, SetLocalDescriptionAfterCreateOffer) {
-    rtcRtpTransceiverHandle transceiver = nullptr;
-    ASSERT_EQ(RTCPeerConnection_AddTransceiver1(
-                  pc_, RTCMediaType::AUDIO, &transceiver),
-              rtcResultU4::kSuccess);
-    if (transceiver) RefCountedObject_Release(transceiver);
+  scoped_refptr<RTCRtpTransceiver> transceiver =
+      pc_->AddTransceiver(RTCMediaType::AUDIO);
+  ASSERT_TRUE(transceiver.get() != nullptr);
 
-    rtcMediaConstraintsHandle constraints = MediaConstraints_Create();
-    ASSERT_NE(constraints, nullptr);
+  scoped_refptr<RTCMediaConstraints> constraints = RTCMediaConstraints::Create();
+  ASSERT_TRUE(constraints.get() != nullptr);
 
-    OfferAnswerResult offer;
-    ASSERT_EQ(RTCPeerConnection_CreateOffer(pc_, &offer, &OnGetSdpSuccess,
-                                            &OnSdpFailure, constraints),
-              rtcResultU4::kSuccess);
-    ASSERT_TRUE(offer.latch.WaitFor(std::chrono::seconds(5)));
-    ASSERT_TRUE(offer.succeeded);
+  OfferAnswerResult offer;
+  pc_->CreateOffer(
+      [&offer](const string sdp, const string type) {
+        offer.sdp = sdp.std_string();
+        offer.type = type.std_string();
+        offer.succeeded = true;
+        offer.latch.Signal();
+      },
+      [&offer](const char* error) {
+        if (error) offer.error = error;
+        offer.succeeded = false;
+        offer.latch.Signal();
+      },
+      constraints);
+  ASSERT_TRUE(offer.latch.WaitFor(std::chrono::seconds(5)));
+  ASSERT_TRUE(offer.succeeded);
 
-    OfferAnswerResult set;
-    ASSERT_EQ(RTCPeerConnection_SetLocalDescription(
-                  pc_, offer.sdp.c_str(), offer.type.c_str(), &set,
-                  &OnSetSdpSuccess, &OnSdpFailure),
-              rtcResultU4::kSuccess);
-    ASSERT_TRUE(set.latch.WaitFor(std::chrono::seconds(5)));
-    EXPECT_TRUE(set.succeeded) << "SetLocalDescription failed: " << set.error;
+  OfferAnswerResult set;
+  pc_->SetLocalDescription(
+      string(offer.sdp), string(offer.type),
+      [&set]() {
+        set.succeeded = true;
+        set.latch.Signal();
+      },
+      [&set](const char* error) {
+        if (error) set.error = error;
+        set.succeeded = false;
+        set.latch.Signal();
+      });
+  ASSERT_TRUE(set.latch.WaitFor(std::chrono::seconds(5)));
+  EXPECT_TRUE(set.succeeded) << "SetLocalDescription failed: " << set.error;
 
-    rtcSignalingState state{};
-    EXPECT_EQ(RTCPeerConnection_GetSignalingState(pc_, &state),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(state, rtcSignalingState::kHaveLocalOffer);
-
-    RefCountedObject_Release(constraints);
+  EXPECT_EQ(pc_->signaling_state(), RTCSignalingStateHaveLocalOffer);
 }
 
-TEST_F(RTCPeerConnectionTest, StateGettersReturnClosedAfterClose) {
-    EXPECT_EQ(RTCPeerConnection_Close(pc_), rtcResultU4::kSuccess);
-
-    rtcSignalingState signaling{};
-    EXPECT_EQ(RTCPeerConnection_GetSignalingState(pc_, &signaling),
-              rtcResultU4::kPeerConnectionClosed);
-
-    rtcIceConnectionState ice{};
-    EXPECT_EQ(RTCPeerConnection_GetIceConnectionState(pc_, &ice),
-              rtcResultU4::kPeerConnectionClosed);
-    EXPECT_EQ(
-        RTCPeerConnection_GetStandardizedIceConnectionState(pc_, &ice),
-        rtcResultU4::kPeerConnectionClosed);
-
-    rtcPeerConnectionState pc_state{};
-    EXPECT_EQ(RTCPeerConnection_GetPeerConnectionState(pc_, &pc_state),
-              rtcResultU4::kPeerConnectionClosed);
-
-    rtcIceGatheringState gathering{};
-    EXPECT_EQ(RTCPeerConnection_GetIceGatheringState(pc_, &gathering),
-              rtcResultU4::kPeerConnectionClosed);
-
-    rtcBool32 initialized = rtcBool32::kTrue;
-    EXPECT_EQ(RTCPeerConnection_IsInitialized(pc_, &initialized),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(initialized, rtcBool32::kFalse);
+TEST_F(RTCPeerConnectionTest, NotInitializedAfterClose) {
+  EXPECT_TRUE(pc_->IsInitialized());
+  pc_->Close();
+  // After Close() the peer connection is no longer initialized. The C++ state
+  // getters (signaling_state(), etc.) dereference the released native object
+  // and must not be called post-close — only the C interop wrapper guards this
+  // via IsInitialized(), so the C++-level observable is IsInitialized().
+  EXPECT_FALSE(pc_->IsInitialized());
 }
 
 }  // namespace libwebrtc

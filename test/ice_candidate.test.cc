@@ -1,4 +1,3 @@
-#include <cstring>
 #include <memory>
 #include <string>
 
@@ -7,7 +6,9 @@
 
 #include "rtc_base/logging.h"
 
-#include "interop_api.h"
+#include "rtc_ice_candidate.h"
+#include "rtc_sdp_parse_error.h"
+#include "libwebrtc.h"
 
 namespace libwebrtc {
 namespace {
@@ -19,106 +20,61 @@ const char kCandidate[] =
 }  // namespace
 
 // SSL is required to parse candidate strings, so initialize the library.
+// Exercises the C++ RTCIceCandidate API.
 class RTCIceCandidateTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ASSERT_EQ(LibWebRTC_Initialize(), rtcBool32::kTrue);
-    }
-    void TearDown() override { LibWebRTC_Terminate(); }
+ protected:
+  void SetUp() override { ASSERT_TRUE(LibWebRTC::Initialize()); }
+  void TearDown() override { LibWebRTC::Terminate(); }
 };
 
-TEST_F(RTCIceCandidateTest, CreateReturnsHandle) {
-    rtcSdpParseErrorHandle parse_error = nullptr;
-    rtcIceCandidateHandle candidate = nullptr;
-    EXPECT_EQ(RTCIceCandidate_Create(kCandidate, "audio", 0, &parse_error,
-                                     &candidate),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(candidate, nullptr);
+TEST_F(RTCIceCandidateTest, CreateReturnsObject) {
+  scoped_refptr<RTCSdpParseError> error = RTCSdpParseError::Create();
+  scoped_refptr<RTCIceCandidate> candidate =
+      RTCIceCandidate::Create(kCandidate, "audio", 0, error.get());
+  ASSERT_TRUE(candidate.get() != nullptr);
 
-    char sdp_mid[32] = {0};
-    EXPECT_EQ(RTCIceCandidate_GetSdpMid(candidate, sdp_mid, sizeof(sdp_mid)),
-              rtcResultU4::kSuccess);
-    EXPECT_STREQ(sdp_mid, "audio");
-
-    int mline_index = -1;
-    EXPECT_EQ(RTCIceCandidate_GetSdpMlineIndex(candidate, &mline_index),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(mline_index, 0);
-
-    char cand[256] = {0};
-    EXPECT_EQ(RTCIceCandidate_GetCandidate(candidate, cand, sizeof(cand)),
-              rtcResultU4::kSuccess);
-    EXPECT_GT(std::strlen(cand), 0u);
-
-    if (parse_error) RefCountedObject_Release(parse_error);
-    RefCountedObject_Release(candidate);
+  EXPECT_STREQ(candidate->sdp_mid().c_string(), "audio");
+  EXPECT_EQ(candidate->sdp_mline_index(), 0);
+  EXPECT_GT(candidate->candidate().size(), 0u);
 }
 
-TEST_F(RTCIceCandidateTest, CreateWithNullParseErrorOut) {
-    rtcIceCandidateHandle candidate = nullptr;
-    EXPECT_EQ(RTCIceCandidate_Create(kCandidate, "video", 1, nullptr,
-                                     &candidate),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(candidate, nullptr);
+TEST_F(RTCIceCandidateTest, CreateWithNullErrorSucceeds) {
+  scoped_refptr<RTCIceCandidate> candidate =
+      RTCIceCandidate::Create(kCandidate, "video", 1, nullptr);
+  ASSERT_TRUE(candidate.get() != nullptr);
 
-    int mline_index = -1;
-    EXPECT_EQ(RTCIceCandidate_GetSdpMlineIndex(candidate, &mline_index),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(mline_index, 1);
-
-    RefCountedObject_Release(candidate);
+  EXPECT_STREQ(candidate->sdp_mid().c_string(), "video");
+  EXPECT_EQ(candidate->sdp_mline_index(), 1);
 }
 
-TEST_F(RTCIceCandidateTest, GetCandidateReportsBufferTooSmall) {
-    rtcIceCandidateHandle candidate = nullptr;
-    ASSERT_EQ(RTCIceCandidate_Create(kCandidate, "audio", 0, nullptr,
-                                     &candidate),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(candidate, nullptr);
+TEST_F(RTCIceCandidateTest, CandidatePreservesHostType) {
+  scoped_refptr<RTCIceCandidate> candidate =
+      RTCIceCandidate::Create(kCandidate, "audio", 0, nullptr);
+  ASSERT_TRUE(candidate.get() != nullptr);
 
-    char tiny[4] = {0};
-    EXPECT_EQ(RTCIceCandidate_GetCandidate(candidate, tiny, sizeof(tiny)),
-              rtcResultU4::kBufferTooSmall);
-
-    RefCountedObject_Release(candidate);
+  // The serialized candidate retains the host candidate marker.
+  std::string cand = candidate->candidate().std_string();
+  EXPECT_NE(cand.find("typ host"), std::string::npos);
 }
 
-// --- Negative paths ---
+TEST_F(RTCIceCandidateTest, ToStringYieldsNonEmpty) {
+  scoped_refptr<RTCIceCandidate> candidate =
+      RTCIceCandidate::Create(kCandidate, "audio", 0, nullptr);
+  ASSERT_TRUE(candidate.get() != nullptr);
 
-TEST_F(RTCIceCandidateTest, CreateNullOutPointerFails) {
-    EXPECT_EQ(RTCIceCandidate_Create(kCandidate, "audio", 0, nullptr, nullptr),
-              rtcResultU4::kInvalidPointer);
+  string out;
+  EXPECT_TRUE(candidate->ToString(out));
+  EXPECT_GT(out.size(), 0u);
 }
 
-TEST_F(RTCIceCandidateTest, GetCandidateNullHandleFails) {
-    char value[32] = {0};
-    EXPECT_EQ(RTCIceCandidate_GetCandidate(nullptr, value, sizeof(value)),
-              rtcResultU4::kInvalidNativeHandle);
-}
+TEST_F(RTCIceCandidateTest, MalformedCandidateReturnsNull) {
+  scoped_refptr<RTCSdpParseError> error = RTCSdpParseError::Create();
+  ASSERT_TRUE(error.get() != nullptr);
 
-TEST_F(RTCIceCandidateTest, GetSdpMidNullHandleFails) {
-    char value[32] = {0};
-    EXPECT_EQ(RTCIceCandidate_GetSdpMid(nullptr, value, sizeof(value)),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST_F(RTCIceCandidateTest, GetSdpMlineIndexNullOutFails) {
-    rtcIceCandidateHandle candidate = nullptr;
-    ASSERT_EQ(RTCIceCandidate_Create(kCandidate, "audio", 0, nullptr,
-                                     &candidate),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(candidate, nullptr);
-
-    EXPECT_EQ(RTCIceCandidate_GetSdpMlineIndex(candidate, nullptr),
-              rtcResultU4::kInvalidPointer);
-
-    RefCountedObject_Release(candidate);
-}
-
-TEST_F(RTCIceCandidateTest, GetSdpMlineIndexNullHandleFails) {
-    int mline_index = 0;
-    EXPECT_EQ(RTCIceCandidate_GetSdpMlineIndex(nullptr, &mline_index),
-              rtcResultU4::kInvalidNativeHandle);
+  // A non-candidate string fails to parse and yields a null result.
+  scoped_refptr<RTCIceCandidate> candidate =
+      RTCIceCandidate::Create("not a candidate", "audio", 0, error.get());
+  EXPECT_TRUE(candidate.get() == nullptr);
 }
 
 }  // namespace libwebrtc

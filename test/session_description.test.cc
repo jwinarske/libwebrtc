@@ -1,4 +1,3 @@
-#include <cstring>
 #include <memory>
 #include <string>
 
@@ -7,7 +6,9 @@
 
 #include "rtc_base/logging.h"
 
-#include "interop_api.h"
+#include "rtc_sdp_parse_error.h"
+#include "rtc_session_description.h"
+#include "libwebrtc.h"
 
 namespace libwebrtc {
 namespace {
@@ -31,101 +32,69 @@ const char kSdp[] =
 
 }  // namespace
 
-// SSL is required to parse/build SDP, so wrap creation tests in a fixture
-// that initializes the library.
+// SSL is required to parse/build SDP, so wrap the creation tests in a fixture
+// that initializes the library. Exercises the C++ RTCSessionDescription API.
 class RTCSessionDescriptionTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ASSERT_EQ(LibWebRTC_Initialize(), rtcBool32::kTrue);
-    }
-    void TearDown() override { LibWebRTC_Terminate(); }
+ protected:
+  void SetUp() override { ASSERT_TRUE(LibWebRTC::Initialize()); }
+  void TearDown() override { LibWebRTC::Terminate(); }
 };
 
-TEST_F(RTCSessionDescriptionTest, CreateOfferReturnsHandle) {
-    rtcSessionDescriptionHandle desc = nullptr;
-    EXPECT_EQ(RTCSessionDescription_Create("offer", kSdp, nullptr, &desc),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(desc, nullptr);
+TEST_F(RTCSessionDescriptionTest, CreateOfferReturnsObject) {
+  scoped_refptr<RTCSdpParseError> error = RTCSdpParseError::Create();
+  scoped_refptr<RTCSessionDescription> desc =
+      RTCSessionDescription::Create("offer", kSdp, error.get());
+  ASSERT_TRUE(desc.get() != nullptr);
 
-    char type[32] = {0};
-    EXPECT_EQ(RTCSessionDescription_GetType(desc, type, sizeof(type)),
-              rtcResultU4::kSuccess);
-    EXPECT_STREQ(type, "offer");
-
-    rtcSdpType sdp_type{};
-    EXPECT_EQ(RTCSessionDescription_GetSdpType(desc, &sdp_type),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(sdp_type, rtcSdpType::kOffer);
-
-    char sdp[1024] = {0};
-    EXPECT_EQ(RTCSessionDescription_GetSdp(desc, sdp, sizeof(sdp)),
-              rtcResultU4::kSuccess);
-    EXPECT_GT(std::strlen(sdp), 0u);
-
-    char str[1024] = {0};
-    rtcBool32 success = rtcBool32::kFalse;
-    EXPECT_EQ(RTCSessionDescription_ToString(desc, str, sizeof(str), &success),
-              rtcResultU4::kSuccess);
-
-    RefCountedObject_Release(desc);
+  EXPECT_STREQ(desc->type().c_string(), "offer");
+  EXPECT_EQ(desc->GetType(), RTCSessionDescription::kOffer);
+  EXPECT_GT(desc->sdp().size(), 0u);
 }
 
-TEST_F(RTCSessionDescriptionTest, GetSdpReportsBufferTooSmall) {
-    rtcSessionDescriptionHandle desc = nullptr;
-    ASSERT_EQ(RTCSessionDescription_Create("offer", kSdp, nullptr, &desc),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(desc, nullptr);
-
-    char tiny[4] = {0};
-    EXPECT_EQ(RTCSessionDescription_GetSdp(desc, tiny, sizeof(tiny)),
-              rtcResultU4::kBufferTooSmall);
-
-    RefCountedObject_Release(desc);
+TEST_F(RTCSessionDescriptionTest, CreateWithNullErrorSucceeds) {
+  scoped_refptr<RTCSessionDescription> desc =
+      RTCSessionDescription::Create("offer", kSdp, nullptr);
+  ASSERT_TRUE(desc.get() != nullptr);
+  EXPECT_STREQ(desc->type().c_string(), "offer");
 }
 
-// --- Negative paths ---
+TEST_F(RTCSessionDescriptionTest, ToStringYieldsNonEmptySdp) {
+  scoped_refptr<RTCSessionDescription> desc =
+      RTCSessionDescription::Create("offer", kSdp, nullptr);
+  ASSERT_TRUE(desc.get() != nullptr);
 
-TEST_F(RTCSessionDescriptionTest, CreateNullTypeFails) {
-    rtcSessionDescriptionHandle desc = nullptr;
-    EXPECT_EQ(RTCSessionDescription_Create(nullptr, kSdp, nullptr, &desc),
-              rtcResultU4::kInvalidPointer);
+  string out;
+  EXPECT_TRUE(desc->ToString(out));
+  EXPECT_GT(out.size(), 0u);
 }
 
-TEST_F(RTCSessionDescriptionTest, CreateNullSdpFails) {
-    rtcSessionDescriptionHandle desc = nullptr;
-    EXPECT_EQ(RTCSessionDescription_Create("offer", nullptr, nullptr, &desc),
-              rtcResultU4::kInvalidPointer);
+TEST_F(RTCSessionDescriptionTest, SdpRoundTripsContent) {
+  scoped_refptr<RTCSessionDescription> desc =
+      RTCSessionDescription::Create("offer", kSdp, nullptr);
+  ASSERT_TRUE(desc.get() != nullptr);
+
+  // The serialized SDP should preserve the media section.
+  std::string sdp = desc->sdp().std_string();
+  EXPECT_NE(sdp.find("m=application"), std::string::npos);
 }
 
-TEST_F(RTCSessionDescriptionTest, CreateNullOutPointerFails) {
-    EXPECT_EQ(RTCSessionDescription_Create("offer", kSdp, nullptr, nullptr),
-              rtcResultU4::kInvalidPointer);
+TEST_F(RTCSessionDescriptionTest, InvalidTypeReturnsNull) {
+  scoped_refptr<RTCSdpParseError> error = RTCSdpParseError::Create();
+  // An unrecognized SDP type cannot map to a known SdpType -> null result.
+  scoped_refptr<RTCSessionDescription> desc =
+      RTCSessionDescription::Create("not-a-type", kSdp, error.get());
+  EXPECT_TRUE(desc.get() == nullptr);
 }
 
-TEST_F(RTCSessionDescriptionTest, GetSdpNullHandleFails) {
-    char value[16] = {0};
-    EXPECT_EQ(RTCSessionDescription_GetSdp(nullptr, value, sizeof(value)),
-              rtcResultU4::kInvalidNativeHandle);
-}
+TEST_F(RTCSessionDescriptionTest, MalformedSdpPopulatesParseError) {
+  scoped_refptr<RTCSdpParseError> error = RTCSdpParseError::Create();
+  ASSERT_TRUE(error.get() != nullptr);
 
-TEST_F(RTCSessionDescriptionTest, GetTypeNullHandleFails) {
-    char value[16] = {0};
-    EXPECT_EQ(RTCSessionDescription_GetType(nullptr, value, sizeof(value)),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST_F(RTCSessionDescriptionTest, GetSdpTypeNullHandleFails) {
-    rtcSdpType sdp_type{};
-    EXPECT_EQ(RTCSessionDescription_GetSdpType(nullptr, &sdp_type),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST_F(RTCSessionDescriptionTest, ToStringNullHandleFails) {
-    char value[16] = {0};
-    rtcBool32 success = rtcBool32::kTrue;
-    EXPECT_EQ(RTCSessionDescription_ToString(nullptr, value, sizeof(value),
-                                             &success),
-              rtcResultU4::kInvalidNativeHandle);
+  // Garbage SDP fails to parse and leaves a null description; the error object
+  // is populated with a description by the implementation.
+  scoped_refptr<RTCSessionDescription> desc =
+      RTCSessionDescription::Create("offer", "this is not sdp", error.get());
+  EXPECT_TRUE(desc.get() == nullptr);
 }
 
 }  // namespace libwebrtc

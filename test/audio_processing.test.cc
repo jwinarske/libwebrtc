@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -6,132 +7,82 @@
 
 #include "rtc_base/logging.h"
 
-#include "interop_api.h"
+#include "rtc_audio_processing.h"
+#include "rtc_peerconnection_factory.h"
+#include "rtc_types.h"
+#include "libwebrtc.h"
 
 namespace libwebrtc {
 namespace {
 
-// No-op custom processing callback used to build a valid custom handle.
-void LIB_WEBRTC_CALL OnProcess(rtcObjectHandle /*user_data*/,
-                               int /*num_bands*/, int /*num_frames*/,
-                               int /*buffer_size*/, float* /*buffer*/) {}
+// Minimal CustomProcessing implementation that records the calls it receives.
+class CountingProcessing : public RTCAudioProcessing::CustomProcessing {
+ public:
+  void Initialize(int /*sample_rate_hz*/, int /*num_channels*/) override {
+    ++initialize_calls;
+  }
+  void Process(int /*num_bands*/, int /*num_frames*/, int /*buffer_size*/,
+               float* /*buffer*/) override {
+    ++process_calls;
+  }
+  void Reset(int /*new_rate*/) override { ++reset_calls; }
+  void Release() override { ++release_calls; }
+
+  int initialize_calls = 0;
+  int process_calls = 0;
+  int reset_calls = 0;
+  int release_calls = 0;
+};
 
 }  // namespace
 
-// --- Negative-path tests that don't need a created instance ---
-
-TEST(RTCAudioProcessingNegative, CreateWithNullOutPointerFails) {
-    EXPECT_EQ(RTCAudioProcessing_Create(nullptr),
-              rtcResultU4::kInvalidPointer);
-}
-
-TEST(RTCAudioProcessingNegative, SetCapturePostProcessingWithNullHandleFails) {
-    EXPECT_EQ(RTCAudioProcessing_SetCapturePostProcessing(nullptr, nullptr),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCAudioProcessingNegative, SetRenderPreProcessingWithNullHandleFails) {
-    EXPECT_EQ(RTCAudioProcessing_SetRenderPreProcessing(nullptr, nullptr),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCAudioProcessingNegative, CreateCustomWithNullOutPointerFails) {
-    rtcAudioProcessingCustomCallbacks callbacks{};
-    callbacks.Process = &OnProcess;
-    EXPECT_EQ(RTCAudioProcessing_CreateCustom(&callbacks, nullptr),
-              rtcResultU4::kInvalidPointer);
-}
-
-TEST(RTCAudioProcessingNegative, CreateCustomWithNullCallbacksFails) {
-    rtcAudioProcessingCustomHandle custom = nullptr;
-    EXPECT_EQ(RTCAudioProcessing_CreateCustom(nullptr, &custom),
-              rtcResultU4::kInvalidPointer);
-    EXPECT_EQ(custom, nullptr);
-}
-
-TEST(RTCAudioProcessingNegative, CreateCustomWithoutProcessCallbackFails) {
-    rtcAudioProcessingCustomCallbacks callbacks{};  // Process is null
-    rtcAudioProcessingCustomHandle custom = nullptr;
-    EXPECT_EQ(RTCAudioProcessing_CreateCustom(&callbacks, &custom),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(custom, nullptr);
-}
-
-TEST(RTCAudioProcessingNegative, ReleaseCustomWithNullHandleFails) {
-    EXPECT_EQ(RTCAudioProcessing_ReleaseCustom(nullptr),
-              rtcResultU4::kInvalidPointer);
-}
-
-// --- Fixture owning a created audio processing instance ---
-
+// Audio processing is obtained from a live peer connection factory.
 class RTCAudioProcessingTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ASSERT_EQ(RTCAudioProcessing_Create(&processing_),
-                  rtcResultU4::kSuccess);
-        ASSERT_NE(processing_, nullptr);
-    }
+ protected:
+  void SetUp() override {
+    ASSERT_TRUE(LibWebRTC::Initialize());
+    factory_ = LibWebRTC::CreateRTCPeerConnectionFactory();
+    ASSERT_TRUE(factory_.get() != nullptr);
+    ASSERT_TRUE(factory_->Initialize());
+    processing_ = factory_->GetAudioProcessing();
+    ASSERT_TRUE(processing_.get() != nullptr);
+  }
 
-    void TearDown() override {
-        if (processing_) {
-            RefCountedObject_Release(processing_);
-            processing_ = nullptr;
-        }
+  void TearDown() override {
+    processing_ = nullptr;
+    if (factory_) {
+      factory_->Terminate();
+      factory_ = nullptr;
     }
+    LibWebRTC::Terminate();
+  }
 
-    rtcAudioProcessingHandle processing_ = nullptr;
+  scoped_refptr<RTCPeerConnectionFactory> factory_;
+  scoped_refptr<RTCAudioProcessing> processing_;
 };
 
-TEST_F(RTCAudioProcessingTest, SetCapturePostProcessingWithNullCustomFails) {
-    EXPECT_EQ(RTCAudioProcessing_SetCapturePostProcessing(processing_, nullptr),
-              rtcResultU4::kInvalidPointer);
+TEST_F(RTCAudioProcessingTest, GetAudioProcessingReturnsSameInstance) {
+  scoped_refptr<RTCAudioProcessing> again = factory_->GetAudioProcessing();
+  EXPECT_TRUE(again.get() != nullptr);
 }
 
-TEST_F(RTCAudioProcessingTest, SetRenderPreProcessingWithNullCustomFails) {
-    EXPECT_EQ(RTCAudioProcessing_SetRenderPreProcessing(processing_, nullptr),
-              rtcResultU4::kInvalidPointer);
+TEST_F(RTCAudioProcessingTest, SetCapturePostProcessingAcceptsCustom) {
+  CountingProcessing custom;
+  processing_->SetCapturePostProcessing(&custom);
+  // Detach before `custom` leaves scope so the adapter holds no dangling ptr.
+  processing_->SetCapturePostProcessing(nullptr);
 }
 
-TEST_F(RTCAudioProcessingTest, CreateCustomAndAttachCapturePostProcessing) {
-    rtcAudioProcessingCustomCallbacks callbacks{};
-    callbacks.Process = &OnProcess;
-
-    rtcAudioProcessingCustomHandle custom = nullptr;
-    ASSERT_EQ(RTCAudioProcessing_CreateCustom(&callbacks, &custom),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(custom, nullptr);
-
-    EXPECT_EQ(RTCAudioProcessing_SetCapturePostProcessing(processing_, custom),
-              rtcResultU4::kSuccess);
-
-    // Ownership of the custom handle passes to the processing instance, so it
-    // is not released here.
+TEST_F(RTCAudioProcessingTest, SetRenderPreProcessingAcceptsCustom) {
+  CountingProcessing custom;
+  processing_->SetRenderPreProcessing(&custom);
+  processing_->SetRenderPreProcessing(nullptr);
 }
 
-TEST_F(RTCAudioProcessingTest, CreateCustomAndAttachRenderPreProcessing) {
-    rtcAudioProcessingCustomCallbacks callbacks{};
-    callbacks.Process = &OnProcess;
-
-    rtcAudioProcessingCustomHandle custom = nullptr;
-    ASSERT_EQ(RTCAudioProcessing_CreateCustom(&callbacks, &custom),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(custom, nullptr);
-
-    EXPECT_EQ(RTCAudioProcessing_SetRenderPreProcessing(processing_, custom),
-              rtcResultU4::kSuccess);
-}
-
-TEST_F(RTCAudioProcessingTest, CreateCustomThenReleaseCustomSucceeds) {
-    rtcAudioProcessingCustomCallbacks callbacks{};
-    callbacks.Process = &OnProcess;
-
-    rtcAudioProcessingCustomHandle custom = nullptr;
-    ASSERT_EQ(RTCAudioProcessing_CreateCustom(&callbacks, &custom),
-              rtcResultU4::kSuccess);
-    ASSERT_NE(custom, nullptr);
-
-    EXPECT_EQ(RTCAudioProcessing_ReleaseCustom(custom),
-              rtcResultU4::kSuccess);
+TEST_F(RTCAudioProcessingTest, ClearingProcessorsWithNullIsSafe) {
+  // Detaching with nullptr must not dereference the (absent) processor.
+  processing_->SetCapturePostProcessing(nullptr);
+  processing_->SetRenderPreProcessing(nullptr);
 }
 
 }  // namespace libwebrtc

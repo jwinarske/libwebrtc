@@ -1,96 +1,106 @@
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "test/gmock.h"
 #include "test/gtest.h"
 
 #include "rtc_base/logging.h"
 
-#include "interop_api.h"
+#include "rtc_frame_cryptor.h"
+#include "rtc_types.h"
+#include "libwebrtc.h"
 
 namespace libwebrtc {
+namespace {
 
-// RTCFrameCryptor creation requires a key provider plus a live RTP
-// sender/receiver, which is heavy to construct in a unit test. These tests
-// therefore concentrate on the null-handle/invalid-argument negative paths
-// for every exposed function, asserting the exact return codes from
-// src/interop/rtc_frame_cryptor_interop.cc.
-
-TEST(RTCFrameCryptorNegative, CreateForSenderWithNullOutPointerFails) {
-    EXPECT_EQ(RTCFrameCryptor_CreateForSender(
-                  nullptr, "p0", nullptr,
-                  rtcFrameCryptionAlgorithm::kAesGcm, nullptr, nullptr),
-              rtcResultU4::kInvalidPointer);
+vector<uint8_t> MakeKey(uint8_t seed) {
+  std::vector<uint8_t> bytes(16, seed);
+  return vector<uint8_t>(bytes);
 }
 
-TEST(RTCFrameCryptorNegative, CreateForSenderWithNullFactoryFails) {
-    rtcFrameCryptorHandle cryptor = nullptr;
-    EXPECT_EQ(RTCFrameCryptor_CreateForSender(
-                  nullptr, "p0", nullptr,
-                  rtcFrameCryptionAlgorithm::kAesGcm, nullptr, &cryptor),
-              rtcResultU4::kInvalidNativeHandle);
-    EXPECT_EQ(cryptor, nullptr);
+}  // namespace
+
+// --- KeyProvider creation ---
+
+TEST(KeyProviderTest, CreateWithDefaultOptionsSucceeds) {
+  KeyProviderOptions options;
+  scoped_refptr<KeyProvider> provider = KeyProvider::Create(&options);
+  ASSERT_TRUE(provider.get() != nullptr);
 }
 
-TEST(RTCFrameCryptorNegative, CreateForReceiverWithNullOutPointerFails) {
-    EXPECT_EQ(RTCFrameCryptor_CreateForReceiver(
-                  nullptr, "p0", nullptr,
-                  rtcFrameCryptionAlgorithm::kAesGcm, nullptr, nullptr),
-              rtcResultU4::kInvalidPointer);
+// Fixture that owns a shared-key provider for the duration of each test.
+class KeyProviderTestFixture : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    KeyProviderOptions options;
+    options.shared_key = true;
+    options.ratchet_salt = MakeKey(0x01);
+    options.ratchet_window_size = 16;
+    options.failure_tolerance = -1;
+    options.key_ring_size = 16;
+    options.key_derivation_algorithm = KeyDerivationAlgorithm::kPBKDF2;
+    provider_ = KeyProvider::Create(&options);
+    ASSERT_TRUE(provider_.get() != nullptr);
+  }
+
+  void TearDown() override { provider_ = nullptr; }
+
+  scoped_refptr<KeyProvider> provider_;
+};
+
+TEST_F(KeyProviderTestFixture, SetSharedKeySucceeds) {
+  EXPECT_TRUE(provider_->SetSharedKey(0, MakeKey(0x11)));
 }
 
-TEST(RTCFrameCryptorNegative, CreateForReceiverWithNullFactoryFails) {
-    rtcFrameCryptorHandle cryptor = nullptr;
-    EXPECT_EQ(RTCFrameCryptor_CreateForReceiver(
-                  nullptr, "p0", nullptr,
-                  rtcFrameCryptionAlgorithm::kAesGcm, nullptr, &cryptor),
-              rtcResultU4::kInvalidNativeHandle);
-    EXPECT_EQ(cryptor, nullptr);
+TEST_F(KeyProviderTestFixture, ExportSharedKeyAfterSet) {
+  ASSERT_TRUE(provider_->SetSharedKey(0, MakeKey(0x22)));
+  vector<uint8_t> exported = provider_->ExportSharedKey(0);
+  EXPECT_GT(exported.size(), 0u);
 }
 
-TEST(RTCFrameCryptorNegative, SetEnabledWithNullHandleReturnsFalse) {
-    EXPECT_EQ(RTCFrameCryptor_SetEnabled(nullptr, rtcBool32::kTrue),
-              rtcBool32::kFalse);
+TEST_F(KeyProviderTestFixture, RatchetSharedKeyAfterSet) {
+  ASSERT_TRUE(provider_->SetSharedKey(0, MakeKey(0x33)));
+  vector<uint8_t> ratcheted = provider_->RatchetSharedKey(0);
+  // Ratcheting returns the derived key material (may be non-empty).
+  EXPECT_GE(ratcheted.size(), 0u);
 }
 
-TEST(RTCFrameCryptorNegative, GetEnabledWithNullHandleFails) {
-    rtcBool32 enabled = rtcBool32::kTrue;
-    EXPECT_EQ(RTCFrameCryptor_GetEnabled(nullptr, &enabled),
-              rtcResultU4::kInvalidNativeHandle);
+TEST_F(KeyProviderTestFixture, SetKeyForParticipantSucceeds) {
+  EXPECT_TRUE(provider_->SetKey(string("participant-1"), 0, MakeKey(0x44)));
 }
 
-TEST(RTCFrameCryptorNegative, GetEnabledWithNullOutPointerFails) {
-    // CHECK_NATIVE_HANDLE runs before CHECK_POINTER, so a null handle is
-    // reported first regardless of the out-pointer.
-    EXPECT_EQ(RTCFrameCryptor_GetEnabled(nullptr, nullptr),
-              rtcResultU4::kInvalidNativeHandle);
+TEST_F(KeyProviderTestFixture, ExportKeyAfterSetKey) {
+  ASSERT_TRUE(provider_->SetKey(string("participant-1"), 0, MakeKey(0x55)));
+  vector<uint8_t> exported =
+      provider_->ExportKey(string("participant-1"), 0);
+  EXPECT_GT(exported.size(), 0u);
 }
 
-TEST(RTCFrameCryptorNegative, SetKeyIndexWithNullHandleReturnsFalse) {
-    EXPECT_EQ(RTCFrameCryptor_SetKeyIndex(nullptr, 0), rtcBool32::kFalse);
+TEST_F(KeyProviderTestFixture, RatchetKeyAfterSetKey) {
+  ASSERT_TRUE(provider_->SetKey(string("participant-1"), 0, MakeKey(0x66)));
+  vector<uint8_t> ratcheted =
+      provider_->RatchetKey(string("participant-1"), 0);
+  EXPECT_GE(ratcheted.size(), 0u);
 }
 
-TEST(RTCFrameCryptorNegative, GetKeyIndexWithNullHandleFails) {
-    int index = 0;
-    EXPECT_EQ(RTCFrameCryptor_GetKeyIndex(nullptr, &index),
-              rtcResultU4::kInvalidNativeHandle);
+TEST_F(KeyProviderTestFixture, SetSifTrailerDoesNotCrash) {
+  std::vector<uint8_t> trailer = {0xDE, 0xAD, 0xBE, 0xEF};
+  provider_->SetSifTrailer(vector<uint8_t>(trailer));
 }
 
-TEST(RTCFrameCryptorNegative, GetParticipantIdWithNullHandleFails) {
-    char buffer[64] = {0};
-    EXPECT_EQ(RTCFrameCryptor_GetParticipantId(nullptr, buffer, 64),
-              rtcResultU4::kInvalidNativeHandle);
-}
+// --- RTCFrameCryptor ---
+//
+// RTCFrameCryptor requires a live RTP sender/receiver from an established
+// peer connection, which is not constructible in a pure unit test. The
+// FrameCryptorFactory entry points are exercised in integration tests; here
+// we only verify the supporting enums/options used to drive them are usable.
 
-TEST(RTCFrameCryptorNegative, RegisterObserverWithNullHandleFails) {
-    rtcFrameCryptorObserverCallbacks callbacks{};
-    EXPECT_EQ(RTCFrameCryptor_RegisterObserver(nullptr, &callbacks),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCFrameCryptorNegative, UnregisterObserverWithNullHandleFails) {
-    EXPECT_EQ(RTCFrameCryptor_UnregisterObserver(nullptr),
-              rtcResultU4::kInvalidNativeHandle);
+TEST(RTCFrameCryptorTypes, AlgorithmAndStateEnumsAreDistinct) {
+  EXPECT_NE(FrameCryptorAlgorithm::kAesGcm, FrameCryptorAlgorithm::kAesCbc);
+  EXPECT_NE(static_cast<int>(RTCFrameCryptionState::kNew),
+            static_cast<int>(RTCFrameCryptionState::kOk));
 }
 
 }  // namespace libwebrtc

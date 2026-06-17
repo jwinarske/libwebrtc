@@ -6,175 +6,95 @@
 
 #include "rtc_base/logging.h"
 
-#include "interop_api.h"
+#include "rtc_dummy_video_capturer.h"
+#include "rtc_peerconnection_factory.h"
+#include "rtc_video_device.h"
+#include "libwebrtc.h"
 
 namespace libwebrtc {
 
-// Negative-path tests that don't need a video device.
-
-TEST(RTCVideoDeviceNegative, NumberOfDevicesWithNullHandleReturnsZero) {
-    EXPECT_EQ(RTCVideoDevice_NumberOfDevices(nullptr), 0);
-}
-
-TEST(RTCVideoDeviceNegative, GetDeviceNameWithNullHandleFails) {
-    char name[128] = {0};
-    char id[128] = {0};
-    EXPECT_EQ(
-        RTCVideoDevice_GetDeviceName(nullptr, 0, name, sizeof(name), id,
-                                     sizeof(id)),
-        rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCVideoCapturerNegative, StartCaptureWithNullHandleReturnsFalse) {
-    EXPECT_EQ(RTCVideoCapturer_StartCapture(nullptr), rtcBool32::kFalse);
-}
-
-TEST(RTCVideoCapturerNegative, StopCaptureWithNullHandleFails) {
-    EXPECT_EQ(RTCVideoCapturer_StopCapture(nullptr),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCDummyVideoCapturerNegative, IsRunningWithNullHandleFails) {
-    rtcBool32 running = rtcBool32::kTrue;
-    EXPECT_EQ(RTCDummyVideoCapturer_IsRunning(nullptr, &running),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCDummyVideoCapturerNegative, Start2WithNullOutFails) {
-    EXPECT_EQ(RTCDummyVideoCapturer_Start2(nullptr, 30, nullptr),
-              rtcResultU4::kInvalidPointer);
-}
-
-// Fixture owning an initialized factory plus a video device and a dummy
-// video capturer obtained from it.
+// Fixture owning an initialized factory plus a video device and a dummy video
+// capturer obtained from it, exercising the C++ API.
 class RTCVideoDeviceTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        ASSERT_EQ(LibWebRTC_Initialize(), rtcBool32::kTrue);
-        factory_ = LibWebRTC_CreateRTCPeerConnectionFactory();
-        ASSERT_NE(factory_, nullptr);
-        ASSERT_EQ(RTCPeerConnectionFactory_Initialize(factory_),
-                  rtcBool32::kTrue);
-        ASSERT_EQ(RTCPeerConnectionFactory_GetVideoDevice(factory_, &device_),
-                  rtcResultU4::kSuccess);
-        ASSERT_NE(device_, nullptr);
-        ASSERT_EQ(RTCPeerConnectionFactory_CreateDummyVideoCapturer(
-                      factory_, 30, 640, 480, &capturer_),
-                  rtcResultU4::kSuccess);
-        ASSERT_NE(capturer_, nullptr);
-    }
+ protected:
+  void SetUp() override {
+    ASSERT_TRUE(LibWebRTC::Initialize());
+    factory_ = LibWebRTC::CreateRTCPeerConnectionFactory();
+    ASSERT_TRUE(factory_.get() != nullptr);
+    ASSERT_TRUE(factory_->Initialize());
+    device_ = factory_->GetVideoDevice();
+    ASSERT_TRUE(device_.get() != nullptr);
+    capturer_ = factory_->CreateDummyVideoCapturer(30, 640, 480);
+    ASSERT_TRUE(capturer_.get() != nullptr);
+  }
 
-    void TearDown() override {
-        if (capturer_) {
-            RTCDummyVideoCapturer_Stop(capturer_);
-            RefCountedObject_Release(capturer_);
-            capturer_ = nullptr;
-        }
-        if (device_) {
-            RefCountedObject_Release(device_);
-            device_ = nullptr;
-        }
-        if (factory_) {
-            EXPECT_EQ(RTCPeerConnectionFactory_Terminate(factory_),
-                      rtcBool32::kTrue);
-            RefCountedObject_Release(factory_);
-            factory_ = nullptr;
-        }
-        LibWebRTC_Terminate();
+  void TearDown() override {
+    if (capturer_) {
+      capturer_->Stop();
+      capturer_ = nullptr;
     }
+    device_ = nullptr;
+    if (factory_) {
+      factory_->Terminate();
+      factory_ = nullptr;
+    }
+    LibWebRTC::Terminate();
+  }
 
-    rtcPeerConnectionFactoryHandle factory_ = nullptr;
-    rtcVideoDeviceHandle device_ = nullptr;
-    rtcDummyVideoCapturerHandle capturer_ = nullptr;
+  scoped_refptr<RTCPeerConnectionFactory> factory_;
+  scoped_refptr<RTCVideoDevice> device_;
+  scoped_refptr<RTCDummyVideoCapturer> capturer_;
 };
 
 // --- RTCVideoDevice ---
 
 TEST_F(RTCVideoDeviceTest, NumberOfDevicesIsNonNegative) {
-    EXPECT_GE(RTCVideoDevice_NumberOfDevices(device_), 0);
+  // NumberOfDevices() is unsigned, so it is always >= 0; just confirm the
+  // call is safe on a headless host.
+  uint32_t count = device_->NumberOfDevices();
+  (void)count;
+  SUCCEED();
 }
 
-TEST_F(RTCVideoDeviceTest, GetDeviceNameWithBuffer) {
-    int count = RTCVideoDevice_NumberOfDevices(device_);
-    if (count <= 0) {
-        GTEST_SKIP() << "No video devices available";
-    }
-    char name[256] = {0};
-    char id[256] = {0};
-    EXPECT_EQ(
-        RTCVideoDevice_GetDeviceName(device_, 0, name, sizeof(name), id,
-                                     sizeof(id)),
-        rtcResultU4::kSuccess);
-}
-
-TEST_F(RTCVideoDeviceTest, CreateVideoCapturerWithNullDeviceFails) {
-    rtcVideoCapturerHandle capturer = nullptr;
-    EXPECT_EQ(RTCVideoDevice_CreateVideoCapturer(nullptr, "cap", 0, 640, 480,
-                                                 30, &capturer),
-              rtcResultU4::kInvalidNativeHandle);
-    EXPECT_EQ(capturer, nullptr);
+TEST_F(RTCVideoDeviceTest, GetDeviceName) {
+  uint32_t count = device_->NumberOfDevices();
+  if (count == 0) {
+    GTEST_SKIP() << "No video devices available";
+  }
+  char name[256] = {0};
+  char id[256] = {0};
+  EXPECT_EQ(device_->GetDeviceName(0, name, sizeof(name), id, sizeof(id)), 0);
 }
 
 // --- RTCDummyVideoCapturer ---
 
-TEST_F(RTCVideoDeviceTest, DummyCapturerGetStateAndIsRunning) {
-    rtcCaptureState state{};
-    EXPECT_EQ(RTCDummyVideoCapturer_GetState(capturer_, &state),
-              rtcResultU4::kSuccess);
-
-    rtcBool32 running = rtcBool32::kTrue;
-    EXPECT_EQ(RTCDummyVideoCapturer_IsRunning(capturer_, &running),
-              rtcResultU4::kSuccess);
+TEST_F(RTCVideoDeviceTest, DummyCapturerInitialState) {
+  // A freshly created capturer should expose a queryable state and not yet
+  // be running.
+  RTCCaptureState state = capturer_->state();
+  (void)state;
+  EXPECT_FALSE(capturer_->IsRunning());
 }
 
-TEST_F(RTCVideoDeviceTest, DummyCapturerStart1) {
-    rtcCaptureState state{};
-    EXPECT_EQ(RTCDummyVideoCapturer_Start1(capturer_, &state),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCDummyVideoCapturer_Stop(capturer_), rtcResultU4::kSuccess);
+TEST_F(RTCVideoDeviceTest, DummyCapturerStartStop) {
+  RTCCaptureState started = capturer_->Start();
+  EXPECT_EQ(started, RTCCaptureState::CS_RUNNING);
+  EXPECT_TRUE(capturer_->IsRunning());
+
+  capturer_->Stop();
+  EXPECT_FALSE(capturer_->IsRunning());
 }
 
-TEST_F(RTCVideoDeviceTest, DummyCapturerStart2) {
-    rtcCaptureState state{};
-    EXPECT_EQ(RTCDummyVideoCapturer_Start2(capturer_, 30, &state),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCDummyVideoCapturer_Stop(capturer_), rtcResultU4::kSuccess);
+TEST_F(RTCVideoDeviceTest, DummyCapturerStartWithFps) {
+  RTCCaptureState started = capturer_->Start(30);
+  EXPECT_EQ(started, RTCCaptureState::CS_RUNNING);
+  capturer_->Stop();
 }
 
-TEST_F(RTCVideoDeviceTest, DummyCapturerStart2RejectsZeroFps) {
-    rtcCaptureState state{};
-    EXPECT_EQ(RTCDummyVideoCapturer_Start2(capturer_, 0, &state),
-              rtcResultU4::kInvalidParameter);
-}
-
-TEST_F(RTCVideoDeviceTest, DummyCapturerStart3) {
-    rtcCaptureState state{};
-    EXPECT_EQ(RTCDummyVideoCapturer_Start3(capturer_, 30, 640, 480, &state),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCDummyVideoCapturer_Stop(capturer_), rtcResultU4::kSuccess);
-}
-
-TEST_F(RTCVideoDeviceTest, DummyCapturerStart3RejectsZeroParams) {
-    rtcCaptureState state{};
-    EXPECT_EQ(RTCDummyVideoCapturer_Start3(capturer_, 0, 640, 480, &state),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCDummyVideoCapturer_Start3(capturer_, 30, 0, 480, &state),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCDummyVideoCapturer_Start3(capturer_, 30, 640, 0, &state),
-              rtcResultU4::kInvalidParameter);
-}
-
-TEST_F(RTCVideoDeviceTest, DummyCapturerRegisterAndUnregisterObserver) {
-    rtcDummyVideoCapturerObserverCallbacks callbacks{};
-    EXPECT_EQ(RTCDummyVideoCapturer_RegisterObserver(capturer_, &callbacks),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCDummyVideoCapturer_UnregisterObserver(capturer_),
-              rtcResultU4::kSuccess);
-}
-
-TEST_F(RTCVideoDeviceTest, DummyCapturerRegisterObserverWithNullCallbacksFails) {
-    EXPECT_EQ(RTCDummyVideoCapturer_RegisterObserver(capturer_, nullptr),
-              rtcResultU4::kInvalidParameter);
+TEST_F(RTCVideoDeviceTest, DummyCapturerStartWithResolution) {
+  RTCCaptureState started = capturer_->Start(30, 640, 480);
+  EXPECT_EQ(started, RTCCaptureState::CS_RUNNING);
+  capturer_->Stop();
 }
 
 }  // namespace libwebrtc

@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -7,262 +8,144 @@
 
 #include "rtc_base/logging.h"
 
-#include "interop_api.h"
+#include "rtc_video_frame.h"
+#include "rtc_video_renderer.h"
+#include "rtc_types.h"
+#include "libwebrtc.h"
 
 namespace libwebrtc {
 
-// --- RTCVideoFrame creation negatives ---
+// --- Construction variants ---
 
-TEST(RTCVideoFrameNegative, Create0WithNullOutPointerFails) {
-    EXPECT_EQ(RTCVideoFrame_Create0(640, 480, nullptr),
-              rtcResultU4::kInvalidPointer);
+TEST(RTCVideoFrameCreate, CreateFromDimensionsSucceeds) {
+  scoped_refptr<RTCVideoFrame> frame = RTCVideoFrame::Create(640, 480);
+  ASSERT_TRUE(frame.get() != nullptr);
+  EXPECT_EQ(frame->width(), 640);
+  EXPECT_EQ(frame->height(), 480);
 }
 
-TEST(RTCVideoFrameNegative, Create0RejectsBadDimensions) {
-    rtcVideoFrameHandle frame = nullptr;
-    // width must be >= 2 and a multiple of 4, height >= 2.
-    EXPECT_EQ(RTCVideoFrame_Create0(0, 480, &frame),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCVideoFrame_Create0(641, 480, &frame),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(RTCVideoFrame_Create0(640, 0, &frame),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(frame, nullptr);
+TEST(RTCVideoFrameCreate, CreateFromI420BufferSucceeds) {
+  const int width = 640;
+  const int height = 480;
+  std::vector<uint8_t> buffer(width * height * 3 / 2, 0);
+  scoped_refptr<RTCVideoFrame> frame =
+      RTCVideoFrame::Create(width, height, buffer.data(),
+                            static_cast<int>(buffer.size()));
+  ASSERT_TRUE(frame.get() != nullptr);
+  EXPECT_EQ(frame->width(), width);
+  EXPECT_EQ(frame->height(), height);
 }
 
-TEST(RTCVideoFrameNegative, Create1RejectsMismatchedBufferLength) {
-    std::vector<unsigned char> buffer(640 * 480 * 3 / 2, 0);
-    rtcVideoFrameHandle frame = nullptr;
-    // A buffer length that does not equal width*height*3/2 is kOutOfRange.
-    EXPECT_EQ(RTCVideoFrame_Create1(640, 480, buffer.data(), 100, &frame),
-              rtcResultU4::kOutOfRange);
-    EXPECT_EQ(frame, nullptr);
+TEST(RTCVideoFrameCreate, CreateFromPlanesSucceeds) {
+  const int width = 640;
+  const int height = 480;
+  const int stride_y = width;
+  const int stride_uv = (width + 1) / 2;
+  std::vector<uint8_t> y(stride_y * height, 16);
+  std::vector<uint8_t> u(stride_uv * ((height + 1) / 2), 128);
+  std::vector<uint8_t> v(stride_uv * ((height + 1) / 2), 128);
+  scoped_refptr<RTCVideoFrame> frame = RTCVideoFrame::Create(
+      width, height, y.data(), stride_y, u.data(), stride_uv, v.data(),
+      stride_uv);
+  ASSERT_TRUE(frame.get() != nullptr);
+  EXPECT_EQ(frame->width(), width);
+  EXPECT_EQ(frame->height(), height);
 }
 
-TEST(RTCVideoFrameNegative, Create1RejectsNullBuffer) {
-    rtcVideoFrameHandle frame = nullptr;
-    EXPECT_EQ(RTCVideoFrame_Create1(640, 480, nullptr,
-                                    640 * 480 * 3 / 2, &frame),
-              rtcResultU4::kInvalidParameter);
-    EXPECT_EQ(frame, nullptr);
-}
-
-TEST(RTCVideoFrameNegative, GetWidthWithNullHandleFails) {
-    int width = 0;
-    EXPECT_NE(RTCVideoFrame_GetWidth(nullptr, &width),
-              rtcResultU4::kSuccess);
-}
-
-TEST(RTCVideoFrameNegative, GetWidthWithNullOutPointerFails) {
-    EXPECT_EQ(RTCVideoFrame_GetWidth(nullptr, nullptr),
-              rtcResultU4::kInvalidPointer);
-}
-
-// --- RTCVideoFrame fixture ---
+// --- Fixture for a default I420 frame ---
 
 class RTCVideoFrameTest : public ::testing::Test {
-protected:
-    static constexpr int kWidth = 640;
-    static constexpr int kHeight = 480;
+ protected:
+  static constexpr int kWidth = 640;
+  static constexpr int kHeight = 480;
 
-    void SetUp() override {
-        ASSERT_EQ(RTCVideoFrame_Create0(kWidth, kHeight, &frame_),
-                  rtcResultU4::kSuccess);
-        ASSERT_NE(frame_, nullptr);
-    }
+  void SetUp() override {
+    frame_ = RTCVideoFrame::Create(kWidth, kHeight);
+    ASSERT_TRUE(frame_.get() != nullptr);
+  }
 
-    void TearDown() override {
-        if (frame_) {
-            RefCountedObject_Release(frame_);
-            frame_ = nullptr;
-        }
-    }
+  void TearDown() override { frame_ = nullptr; }
 
-    rtcVideoFrameHandle frame_ = nullptr;
+  scoped_refptr<RTCVideoFrame> frame_;
 };
 
 TEST_F(RTCVideoFrameTest, WidthAndHeightMatchCreation) {
-    int width = 0;
-    int height = 0;
-    EXPECT_EQ(RTCVideoFrame_GetWidth(frame_, &width), rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCVideoFrame_GetHeight(frame_, &height), rtcResultU4::kSuccess);
-    EXPECT_EQ(width, kWidth);
-    EXPECT_EQ(height, kHeight);
+  EXPECT_EQ(frame_->width(), kWidth);
+  EXPECT_EQ(frame_->height(), kHeight);
 }
 
-TEST_F(RTCVideoFrameTest, GetSizeReturnsValue) {
-    int size = 0;
-    EXPECT_EQ(RTCVideoFrame_GetSize(frame_, &size), rtcResultU4::kSuccess);
-    EXPECT_GT(size, 0);
-}
-
-TEST_F(RTCVideoFrameTest, StridesArePositive) {
-    int stride_y = 0;
-    int stride_u = 0;
-    int stride_v = 0;
-    EXPECT_EQ(RTCVideoFrame_GetStrideY(frame_, &stride_y),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCVideoFrame_GetStrideU(frame_, &stride_u),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCVideoFrame_GetStrideV(frame_, &stride_v),
-              rtcResultU4::kSuccess);
-    EXPECT_GE(stride_y, kWidth);
-    EXPECT_GT(stride_u, 0);
-    EXPECT_GT(stride_v, 0);
-}
-
-TEST_F(RTCVideoFrameTest, DataPlanesAreNonNull) {
-    const unsigned char* data_y = nullptr;
-    const unsigned char* data_u = nullptr;
-    const unsigned char* data_v = nullptr;
-    EXPECT_EQ(RTCVideoFrame_GetDataY(frame_, &data_y), rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCVideoFrame_GetDataU(frame_, &data_u), rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCVideoFrame_GetDataV(frame_, &data_v), rtcResultU4::kSuccess);
-    EXPECT_NE(data_y, nullptr);
-    EXPECT_NE(data_u, nullptr);
-    EXPECT_NE(data_v, nullptr);
-}
-
-TEST_F(RTCVideoFrameTest, GetDataYWithNullOutPointerFails) {
-    EXPECT_EQ(RTCVideoFrame_GetDataY(frame_, nullptr),
-              rtcResultU4::kInvalidPointer);
+TEST_F(RTCVideoFrameTest, SizeIsPositive) {
+  EXPECT_GT(frame_->size(), 0);
 }
 
 TEST_F(RTCVideoFrameTest, DefaultRotationIsZero) {
-    rtcVideoRotation rotation = rtcVideoRotation::kVideoRotation_90;
-    EXPECT_EQ(RTCVideoFrame_GetRotation(frame_, &rotation),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(rotation, rtcVideoRotation::kVideoRotation_0);
+  EXPECT_EQ(frame_->rotation(), RTCVideoFrame::kVideoRotation_0);
+}
+
+TEST_F(RTCVideoFrameTest, StridesArePlausible) {
+  EXPECT_GE(frame_->StrideY(), kWidth);
+  EXPECT_GT(frame_->StrideU(), 0);
+  EXPECT_GT(frame_->StrideV(), 0);
+}
+
+TEST_F(RTCVideoFrameTest, DataPlanesAreNonNull) {
+  EXPECT_TRUE(frame_->DataY() != nullptr);
+  EXPECT_TRUE(frame_->DataU() != nullptr);
+  EXPECT_TRUE(frame_->DataV() != nullptr);
 }
 
 TEST_F(RTCVideoFrameTest, TimestampRoundTrips) {
-    const rtcTimestamp ts = 1234567;
-    EXPECT_EQ(RTCVideoFrame_SetTimestampInMicroseconds(frame_, ts),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCVideoFrame_GetTimestampInMicroseconds(frame_), ts);
-}
-
-TEST_F(RTCVideoFrameTest, GetTimestampWithNullHandleReturnsZero) {
-    EXPECT_EQ(RTCVideoFrame_GetTimestampInMicroseconds(nullptr),
-              static_cast<rtcTimestamp>(0));
+  const int64_t ts = 1234567;
+  frame_->set_timestamp_us(ts);
+  EXPECT_EQ(frame_->timestamp_us(), ts);
 }
 
 TEST_F(RTCVideoFrameTest, CopyProducesIndependentFrame) {
-    rtcVideoFrameHandle copy = nullptr;
-    EXPECT_EQ(RTCVideoFrame_Copy(frame_, &copy), rtcResultU4::kSuccess);
-    ASSERT_NE(copy, nullptr);
-
-    int width = 0;
-    int height = 0;
-    EXPECT_EQ(RTCVideoFrame_GetWidth(copy, &width), rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCVideoFrame_GetHeight(copy, &height), rtcResultU4::kSuccess);
-    EXPECT_EQ(width, kWidth);
-    EXPECT_EQ(height, kHeight);
-
-    RefCountedObject_Release(copy);
-}
-
-TEST_F(RTCVideoFrameTest, CopyWithNullOutPointerFails) {
-    EXPECT_EQ(RTCVideoFrame_Copy(frame_, nullptr),
-              rtcResultU4::kInvalidPointer);
-}
-
-TEST_F(RTCVideoFrameTest, ConvertToARGBRejectsNullDest) {
-    EXPECT_EQ(RTCVideoFrame_ConvertToARGB(frame_, nullptr), 0);
-}
-
-TEST_F(RTCVideoFrameTest, ConvertToARGBRejectsInvalidDest) {
-    rtcVideoFrameARGB dest{};  // data == nullptr -> rejected
-    EXPECT_EQ(RTCVideoFrame_ConvertToARGB(frame_, &dest), 0);
+  scoped_refptr<RTCVideoFrame> copy = frame_->Copy();
+  ASSERT_TRUE(copy.get() != nullptr);
+  EXPECT_EQ(copy->width(), kWidth);
+  EXPECT_EQ(copy->height(), kHeight);
 }
 
 TEST_F(RTCVideoFrameTest, ConvertToARGBProducesData) {
-    const int stride = kWidth * 4;
-    std::vector<uint8_t> argb(static_cast<size_t>(stride) * kHeight, 0);
-    rtcVideoFrameARGB dest{};
-    dest.type = rtcVideoFrameTypeARGB::kARGB;
-    dest.width = kWidth;
-    dest.height = kHeight;
-    dest.data = argb.data();
-    dest.stride = stride;
-    EXPECT_GT(RTCVideoFrame_ConvertToARGB(frame_, &dest), 0);
+  const int stride = kWidth * 4;
+  std::vector<uint8_t> argb(static_cast<size_t>(stride) * kHeight, 0);
+  RTCVideoFrameARGB dest;
+  dest.type = RTCVideoFrameTypeARGB::kARGB;
+  dest.width = kWidth;
+  dest.height = kHeight;
+  dest.data = argb.data();
+  dest.stride = stride;
+  EXPECT_GT(frame_->ConvertToARGB(&dest), 0);
+}
+
+TEST_F(RTCVideoFrameTest, ConvertToARGBRejectsNullDest) {
+  EXPECT_EQ(frame_->ConvertToARGB(nullptr), 0);
 }
 
 TEST_F(RTCVideoFrameTest, ScaleFromAnotherFrame) {
-    rtcVideoFrameHandle source = nullptr;
-    ASSERT_EQ(RTCVideoFrame_Create0(320, 240, &source), rtcResultU4::kSuccess);
-    ASSERT_NE(source, nullptr);
-
-    int out = 0;
-    EXPECT_EQ(RTCVideoFrame_ScaleFrom(frame_, source, &out),
-              rtcResultU4::kSuccess);
-
-    RefCountedObject_Release(source);
+  scoped_refptr<RTCVideoFrame> source = RTCVideoFrame::Create(320, 240);
+  ASSERT_TRUE(source.get() != nullptr);
+  // Scaling into a 640x480 frame returns the resulting frame size (> 0).
+  EXPECT_GT(frame_->ScaleFrom(source), 0);
 }
 
-TEST_F(RTCVideoFrameTest, ScaleFromWithNullSourceFails) {
-    int out = 0;
-    EXPECT_EQ(RTCVideoFrame_ScaleFrom(frame_, nullptr, &out),
-              rtcResultU4::kInvalidNativeHandle);
+TEST_F(RTCVideoFrameTest, ScaleFromNullArgbReturnsZero) {
+  RTCVideoFrameARGB* argb = nullptr;
+  EXPECT_EQ(frame_->ScaleFrom(argb), 0);
 }
 
-TEST_F(RTCVideoFrameTest, ScaleFromARGBWithNullSourceFails) {
-    int out = 0;
-    EXPECT_EQ(RTCVideoFrame_ScaleFromARGB(frame_, nullptr, &out),
-              rtcResultU4::kInvalidParameter);
-}
-
-TEST_F(RTCVideoFrameTest, ScaleFromYUVWithNullSourceFails) {
-    int out = 0;
-    EXPECT_EQ(RTCVideoFrame_ScaleFromYUV(frame_, nullptr, &out),
-              rtcResultU4::kInvalidParameter);
-}
-
-TEST_F(RTCVideoFrameTest, ClearWithNullHandleFails) {
-    int retval = 1;
-    EXPECT_EQ(RTCVideoFrame_Clear(nullptr, rtcVideoFrameClearType::kNone,
-                                  &retval),
-              rtcResultU4::kInvalidNativeHandle);
-    EXPECT_EQ(retval, 0);
+TEST_F(RTCVideoFrameTest, ScaleFromNullYuvReturnsZero) {
+  RTCVideoFrameYUV* yuv = nullptr;
+  EXPECT_EQ(frame_->ScaleFrom(yuv), 0);
 }
 
 TEST_F(RTCVideoFrameTest, ClearSucceeds) {
-    int retval = 0;
-    EXPECT_EQ(RTCVideoFrame_Clear(frame_, rtcVideoFrameClearType::kNone,
-                                  &retval),
-              rtcResultU4::kSuccess);
+  // Clear returns the number of bytes cleared (the full frame buffer).
+  EXPECT_EQ(frame_->Clear(RTCVideoFrameClearType::kNone), frame_->size());
 }
 
-// --- RTCVideoRenderer ---
-
-TEST(RTCVideoRendererNegative, CreateWithNullOutPointerFails) {
-    EXPECT_EQ(RTCVideoRenderer_Create(nullptr),
-              rtcResultU4::kInvalidPointer);
-}
-
-TEST(RTCVideoRendererNegative, RegisterCallbackWithNullHandleFails) {
-    EXPECT_EQ(RTCVideoRenderer_RegisterFrameCallback(nullptr, nullptr,
-                                                     nullptr),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCVideoRendererNegative, UnRegisterCallbackWithNullHandleFails) {
-    EXPECT_EQ(RTCVideoRenderer_UnRegisterFrameCallback(nullptr),
-              rtcResultU4::kInvalidNativeHandle);
-}
-
-TEST(RTCVideoRendererTest, CreateAndRegisterUnregister) {
-    rtcVideoRendererHandle renderer = nullptr;
-    EXPECT_EQ(RTCVideoRenderer_Create(&renderer), rtcResultU4::kSuccess);
-    ASSERT_NE(renderer, nullptr);
-
-    EXPECT_EQ(RTCVideoRenderer_RegisterFrameCallback(renderer, nullptr,
-                                                     nullptr),
-              rtcResultU4::kSuccess);
-    EXPECT_EQ(RTCVideoRenderer_UnRegisterFrameCallback(renderer),
-              rtcResultU4::kSuccess);
-
-    RefCountedObject_Release(renderer);
-}
+// Note: RTCVideoRenderer<T> is a templated interface whose Create() is not
+// instantiated in the prebuilt library, so it is not exercised here.
 
 }  // namespace libwebrtc
