@@ -52,6 +52,14 @@ class VideoFrameBufferImpl : public RTCVideoFrame {
   void set_rotation(webrtc::VideoRotation rotation) { rotation_ = rotation; }
 
  private:
+  // True only for genuinely I420 buffers. Native (zero-copy) dmabuf buffers
+  // and other non-I420 formats have no CPU-accessible I420 planes on this
+  // path, so the accessors below fail safe instead of forcing a readback
+  // (which would defeat the zero-copy path or dereference a null GetI420()).
+  bool is_i420() const {
+    return buffer_ && buffer_->type() == webrtc::VideoFrameBuffer::Type::kI420;
+  }
+
   webrtc::scoped_refptr<webrtc::VideoFrameBuffer> buffer_;
   int64_t timestamp_us_ = 0;
   webrtc::VideoRotation rotation_ = webrtc::kVideoRotation_0;

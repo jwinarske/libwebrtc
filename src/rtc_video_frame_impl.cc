@@ -19,6 +19,11 @@ VideoFrameBufferImpl::VideoFrameBufferImpl(
 VideoFrameBufferImpl::~VideoFrameBufferImpl() {}
 
 scoped_refptr<RTCVideoFrame> VideoFrameBufferImpl::Copy() {
+#ifndef LIBWEBRTC_NATIVE_READBACK
+  // A native frame cannot be copied into a CPU-accessible frame without a
+  // readback; refuse rather than silently share or download it.
+  if (!is_i420()) return nullptr;
+#endif
   scoped_refptr<VideoFrameBufferImpl> frame =
       scoped_refptr<VideoFrameBufferImpl>(
           new RefCountedObject<VideoFrameBufferImpl>(buffer_));
@@ -30,32 +35,59 @@ int VideoFrameBufferImpl::width() const { return buffer_->width(); }
 int VideoFrameBufferImpl::height() const { return buffer_->height(); }
 
 const uint8_t* VideoFrameBufferImpl::DataY() const {
+#ifndef LIBWEBRTC_NATIVE_READBACK
+  if (!is_i420()) return nullptr;
+#endif
   return buffer_->GetI420()->DataY();
 }
 
 const uint8_t* VideoFrameBufferImpl::DataU() const {
+#ifndef LIBWEBRTC_NATIVE_READBACK
+  if (!is_i420()) return nullptr;
+#endif
   return buffer_->GetI420()->DataU();
 }
 
 const uint8_t* VideoFrameBufferImpl::DataV() const {
+#ifndef LIBWEBRTC_NATIVE_READBACK
+  if (!is_i420()) return nullptr;
+#endif
   return buffer_->GetI420()->DataV();
 }
 
 int VideoFrameBufferImpl::StrideY() const {
+#ifndef LIBWEBRTC_NATIVE_READBACK
+  if (!is_i420()) return 0;
+#endif
   return buffer_->GetI420()->StrideY();
 }
 
 int VideoFrameBufferImpl::StrideU() const {
+#ifndef LIBWEBRTC_NATIVE_READBACK
+  if (!is_i420()) return 0;
+#endif
   return buffer_->GetI420()->StrideU();
 }
 
 int VideoFrameBufferImpl::StrideV() const {
+#ifndef LIBWEBRTC_NATIVE_READBACK
+  if (!is_i420()) return 0;
+#endif
   return buffer_->GetI420()->StrideV();
 }
 
 int VideoFrameBufferImpl::ConvertToARGB(Type type, uint8_t* dst_buffer,
                                         int dst_stride, int dest_width,
                                         int dest_height) {
+#ifndef LIBWEBRTC_NATIVE_READBACK
+  // ConvertToARGB is a CPU readback path. On a native (zero-copy) buffer it
+  // would either fail or force an expensive download; refuse instead.
+  if (!is_i420()) {
+    RTC_LOG(LS_WARNING)
+        << "ConvertToARGB refused: native/non-I420 buffer has no CPU pixels";
+    return 0;
+  }
+#endif
   webrtc::scoped_refptr<webrtc::I420Buffer> i420 =
       webrtc::I420Buffer::Rotate(*buffer_.get(), rotation_);
 
