@@ -23,6 +23,11 @@
 #include "src/internal/custom_audio_transport_impl.h"
 #include "src/internal/local_audio_track.h"
 
+namespace webrtc {
+class VideoDecoderFactory;
+class VideoEncoderFactory;
+}  // namespace webrtc
+
 namespace libwebrtc {
 
 class RTCPeerConnectionFactoryImpl : public RTCPeerConnectionFactory {
@@ -34,6 +39,14 @@ class RTCPeerConnectionFactoryImpl : public RTCPeerConnectionFactory {
   bool Initialize() override;
 
   bool Terminate() override;
+
+  // Injects an external video encoder/decoder factory. Must be called before
+  // Initialize(); ownership is transferred. When left unset, the built-in
+  // factory (or the Intel Media SDK factory, where enabled) is used.
+  void SetVideoEncoderFactory(
+      std::unique_ptr<webrtc::VideoEncoderFactory> factory);
+  void SetVideoDecoderFactory(
+      std::unique_ptr<webrtc::VideoDecoderFactory> factory);
 
   scoped_refptr<RTCPeerConnection> Create(
       const RTCConfiguration& configuration,
@@ -99,6 +112,11 @@ class RTCPeerConnectionFactoryImpl : public RTCPeerConnectionFactory {
   scoped_refptr<RTCVideoSource> CreateVideoSource_s(
       scoped_refptr<RTCVideoCapturer> capturer, const char* video_source_label,
       scoped_refptr<RTCMediaConstraints> constraints);
+
+  // Returns the injected factory when set (transferring ownership), otherwise
+  // the built-in / Intel Media SDK factory.
+  std::unique_ptr<webrtc::VideoEncoderFactory> SelectVideoEncoderFactory();
+  std::unique_ptr<webrtc::VideoDecoderFactory> SelectVideoDecoderFactory();
 #ifdef RTC_DESKTOP_DEVICE
   scoped_refptr<RTCVideoSource> CreateDesktopSource_d(
       scoped_refptr<RTCDesktopCapturer> capturer,
@@ -123,6 +141,8 @@ class RTCPeerConnectionFactoryImpl : public RTCPeerConnectionFactory {
   webrtc::scoped_refptr<webrtc::CustomAudioTransportFactory>
       audio_transport_factory_;
   webrtc::Environment env_;
+  std::unique_ptr<webrtc::VideoEncoderFactory> external_video_encoder_factory_;
+  std::unique_ptr<webrtc::VideoDecoderFactory> external_video_decoder_factory_;
 };
 
 }  // namespace libwebrtc

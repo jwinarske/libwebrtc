@@ -48,6 +48,44 @@ env_(webrtc::EnvironmentFactory().Create()) {}
 
 RTCPeerConnectionFactoryImpl::~RTCPeerConnectionFactoryImpl() {}
 
+void RTCPeerConnectionFactoryImpl::SetVideoEncoderFactory(
+    std::unique_ptr<webrtc::VideoEncoderFactory> factory) {
+  RTC_DCHECK(!rtc_peerconnection_factory_)
+      << "SetVideoEncoderFactory must be called before Initialize()";
+  external_video_encoder_factory_ = std::move(factory);
+}
+
+void RTCPeerConnectionFactoryImpl::SetVideoDecoderFactory(
+    std::unique_ptr<webrtc::VideoDecoderFactory> factory) {
+  RTC_DCHECK(!rtc_peerconnection_factory_)
+      << "SetVideoDecoderFactory must be called before Initialize()";
+  external_video_decoder_factory_ = std::move(factory);
+}
+
+std::unique_ptr<webrtc::VideoEncoderFactory>
+RTCPeerConnectionFactoryImpl::SelectVideoEncoderFactory() {
+  if (external_video_encoder_factory_) {
+    return std::move(external_video_encoder_factory_);
+  }
+#if defined(USE_INTEL_MEDIA_SDK)
+  return CreateIntelVideoEncoderFactory();
+#else
+  return webrtc::CreateBuiltinVideoEncoderFactory();
+#endif
+}
+
+std::unique_ptr<webrtc::VideoDecoderFactory>
+RTCPeerConnectionFactoryImpl::SelectVideoDecoderFactory() {
+  if (external_video_decoder_factory_) {
+    return std::move(external_video_decoder_factory_);
+  }
+#if defined(USE_INTEL_MEDIA_SDK)
+  return CreateIntelVideoDecoderFactory();
+#else
+  return webrtc::CreateBuiltinVideoDecoderFactory();
+#endif
+}
+
 bool RTCPeerConnectionFactoryImpl::Initialize() {
   worker_thread_ = webrtc::Thread::Create();
   worker_thread_->SetName("worker_thread", nullptr);
@@ -82,14 +120,9 @@ bool RTCPeerConnectionFactoryImpl::Initialize() {
     rtc_peerconnection_factory_ = CreatePeerConnectionFactory(
         network_thread_.get(), worker_thread_.get(), signaling_thread_.get(),
         audio_device_module_, webrtc::CreateBuiltinAudioEncoderFactory(),
-        webrtc::CreateBuiltinAudioDecoderFactory(),
-#if defined(USE_INTEL_MEDIA_SDK)
-        CreateIntelVideoEncoderFactory(), CreateIntelVideoDecoderFactory(),
-#else
-        webrtc::CreateBuiltinVideoEncoderFactory(),
-        webrtc::CreateBuiltinVideoDecoderFactory(),
-#endif
-        nullptr, audio_processing_impl_->GetAudioProcessing(), nullptr, nullptr,
+        webrtc::CreateBuiltinAudioDecoderFactory(), SelectVideoEncoderFactory(),
+        SelectVideoDecoderFactory(), nullptr,
+        audio_processing_impl_->GetAudioProcessing(), nullptr, nullptr,
         audio_transport_factory_);
   }
 
