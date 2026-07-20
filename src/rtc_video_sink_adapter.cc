@@ -3,6 +3,7 @@
 #include "rtc_base/logging.h"
 #include "rtc_video_frame_impl.h"
 #include "rtc_video_track.h"
+#include "src/internal/lw_native_video_frame_buffer.h"
 
 namespace libwebrtc {
 
@@ -20,6 +21,14 @@ VideoSinkAdapter::~VideoSinkAdapter() {
 
 // VideoSinkInterface implementation
 void VideoSinkAdapter::OnFrame(const webrtc::VideoFrame& video_frame) {
+  webrtc::MutexLock cs(crt_sec_.get());
+
+  // Native (zero-copy) frames go to the bound native sink and must never reach
+  // the CPU renderer path.
+  if (DeliverNative(video_frame)) {
+    return;
+  }
+
   scoped_refptr<VideoFrameBufferImpl> frame_buffer =
       scoped_refptr<VideoFrameBufferImpl>(
           new RefCountedObject<VideoFrameBufferImpl>(
@@ -28,10 +37,55 @@ void VideoSinkAdapter::OnFrame(const webrtc::VideoFrame& video_frame) {
   frame_buffer->set_rotation(video_frame.rotation());
   frame_buffer->set_timestamp_us(video_frame.timestamp_us());
 
-  webrtc::MutexLock cs(crt_sec_.get());
   for (auto renderer : renderers_) {
     renderer->OnFrame(frame_buffer);
   }
+}
+
+bool VideoSinkAdapter::DeliverNative(const webrtc::VideoFrame& video_frame) {
+  const webrtc::scoped_refptr<webrtc::VideoFrameBuffer> buffer =
+      video_frame.video_frame_buffer();
+  if (!buffer || buffer->type() != webrtc::VideoFrameBuffer::Type::kNative) {
+    return false;  // CPU frame: let the caller run the renderer path.
+  }
+
+  // kNative but not our shared class (some other native buffer): still not for
+  // the CPU renderer -- drop rather than force a readback.
+  auto* native = dynamic_cast<LwNativeVideoFrameBuffer*>(buffer.get());
+  if (!native) {
+    return true;
+  }
+
+  if (native_sink_ && native_sink_->on_frame) {
+    const LwDmabufDescriptor& desc = native->descriptor();
+    // on_format precedes the first frame of each pool generation.
+    if (!have_generation_ || desc.pool_generation != last_generation_) {
+      if (native_sink_->on_format) {
+        native_sink_->on_format(&desc, native_user_);
+      }
+      last_generation_ = desc.pool_generation;
+      have_generation_ = true;
+    }
+    const int taken = native_sink_->on_frame(
+        &desc, native->release_fn(), native->release_ctx(), native_user_);
+    if (taken) {
+      // The sink owns the release obligation now; the buffer must not also
+      // release when it is destroyed.
+      native->DetachRelease();
+    }
+  }
+  // No sink bound, or the sink declined: the buffer releases on destruction.
+  return true;
+}
+
+void VideoSinkAdapter::SetNativeSink(const LwVideoSinkV1* sink, void* user) {
+  webrtc::MutexLock cs(crt_sec_.get());
+  if (native_sink_ && native_sink_ != sink && native_sink_->on_eos) {
+    native_sink_->on_eos(native_user_);
+  }
+  native_sink_ = sink;
+  native_user_ = user;
+  have_generation_ = false;  // re-announce format to the new binding
 }
 
 void VideoSinkAdapter::AddRenderer(
