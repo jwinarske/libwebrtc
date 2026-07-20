@@ -120,6 +120,41 @@ LW_C_API lw_receiver_t* lw_transceiver_receiver(lw_transceiver_t* transceiver);
  * owns one reference. */
 LW_C_API lw_video_track_t* lw_receiver_video_track(lw_receiver_t* receiver);
 
+/* ---- SDP negotiation -------------------------------------------------- */
+
+/* Completion callbacks for the async SDP operations below. They are invoked on
+ * the signaling thread; a C++ consumer handles them directly. (The Dart path
+ * instead surfaces these results over an event port.) `user` is the opaque
+ * cookie passed to the originating call. Strings are valid only for the
+ * duration of the callback. */
+typedef void (*lw_sdp_success_cb)(const char* sdp, const char* type,
+                                  void* user);
+typedef void (*lw_set_sdp_success_cb)(void* user);
+typedef void (*lw_sdp_failure_cb)(const char* error, void* user);
+
+/* Creates an offer/answer. On success `on_success` receives the SDP and its
+ * type ("offer"/"answer"). */
+LW_C_API void lw_pc_create_offer(lw_pc_t* pc, lw_sdp_success_cb on_success,
+                                 lw_sdp_failure_cb on_failure, void* user);
+LW_C_API void lw_pc_create_answer(lw_pc_t* pc, lw_sdp_success_cb on_success,
+                                  lw_sdp_failure_cb on_failure, void* user);
+
+/* Applies a local/remote session description. `type` is "offer"/"answer". */
+LW_C_API void lw_pc_set_local_description(lw_pc_t* pc, const char* sdp,
+                                          const char* type,
+                                          lw_set_sdp_success_cb on_success,
+                                          lw_sdp_failure_cb on_failure,
+                                          void* user);
+LW_C_API void lw_pc_set_remote_description(lw_pc_t* pc, const char* sdp,
+                                           const char* type,
+                                           lw_set_sdp_success_cb on_success,
+                                           lw_sdp_failure_cb on_failure,
+                                           void* user);
+
+/* Adds a remote ICE candidate. */
+LW_C_API void lw_pc_add_ice_candidate(lw_pc_t* pc, const char* mid,
+                                      int mline_index, const char* candidate);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

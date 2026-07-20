@@ -102,6 +102,7 @@ rtc_shared_library("libwebrtc") {
     "src/helper.cc",
     "src/base/portable.cc",
     "src/c/lw_c_api.cc",
+    "src/c/lw_negotiation.cc",
     "src/c/lw_peerconnection.cc",
     "src/c/lw_video_sink_registry.cc",
     "src/internal/custom_audio_transport_impl.cc",
