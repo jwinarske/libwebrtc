@@ -155,6 +155,39 @@ LW_C_API void lw_pc_set_remote_description(lw_pc_t* pc, const char* sdp,
 LW_C_API void lw_pc_add_ice_candidate(lw_pc_t* pc, const char* mid,
                                       int mline_index, const char* candidate);
 
+/* ---- Peer-connection events (observer) -------------------------------- */
+
+/* Per-event C callbacks, invoked on the signaling thread. Any field may be
+ * NULL. State ints correspond to the library's RTC*State enum values. The
+ * struct is copied on registration, so it need not outlive the call; the
+ * function pointers and `user` must remain valid until the observer is
+ * removed. For the Dart path these events are surfaced over an event port
+ * instead. */
+typedef struct LwPcObserver {
+  uint32_t size; /* sizeof(LwPcObserver) */
+  void (*on_signaling_state)(int state, void* user);
+  void (*on_connection_state)(int state, void* user);
+  void (*on_ice_gathering_state)(int state, void* user);
+  void (*on_ice_connection_state)(int state, void* user);
+  /* A local ICE candidate was gathered. Strings are valid for the call only. */
+  void (*on_ice_candidate)(const char* candidate, const char* sdp_mid,
+                           int sdp_mline_index, void* user);
+  void (*on_renegotiation_needed)(void* user);
+  /* A remote track arrived. `transceiver` is an OWNING handle: retire it with
+   * lw_release; reach its receiver/video track via the transceiver
+   * accessors. */
+  void (*on_track)(lw_transceiver_t* transceiver, void* user);
+} LwPcObserver;
+
+/* Registers `observer` for `pc`, replacing any previous one. Returns 0 on
+ * success, negative on error. Remove it (or before releasing the pc) with
+ * lw_pc_remove_observer. */
+LW_C_API int lw_pc_set_observer(lw_pc_t* pc, const LwPcObserver* observer,
+                                void* user);
+
+/* Removes and destroys the pc's observer, if any. */
+LW_C_API void lw_pc_remove_observer(lw_pc_t* pc);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
