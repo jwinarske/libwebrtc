@@ -86,6 +86,40 @@ LW_C_API int lw_video_track_bind_sink(lw_video_track_t* track,
  * on success, negative on error. */
 LW_C_API int lw_video_track_unbind_sink(lw_video_track_t* track);
 
+/* ---- Peer connection / transceiver / receiver ------------------------- */
+
+/* Opaque handles produced by the calls below. */
+typedef struct lw_pc lw_pc_t;
+typedef struct lw_transceiver lw_transceiver_t;
+typedef struct lw_receiver lw_receiver_t;
+
+/* Media kind for a transceiver. */
+typedef enum lw_media_type {
+  LW_MEDIA_AUDIO = 0,
+  LW_MEDIA_VIDEO = 1,
+  LW_MEDIA_DATA = 2,
+} lw_media_type;
+
+/* Creates a peer connection on `factory` with a default configuration.
+ * Returns NULL on failure; the handle owns one reference (lw_release). */
+LW_C_API lw_pc_t* lw_pc_create(lw_factory_t* factory);
+
+/* Closes a peer connection. The handle stays valid until lw_release. */
+LW_C_API void lw_pc_close(lw_pc_t* pc);
+
+/* Adds a transceiver of `media_type` (default direction). Returns NULL on
+ * failure; the handle owns one reference. */
+LW_C_API lw_transceiver_t* lw_pc_add_transceiver(lw_pc_t* pc,
+                                                 lw_media_type media_type);
+
+/* Returns the transceiver's receiver, or NULL. Handle owns one reference. */
+LW_C_API lw_receiver_t* lw_transceiver_receiver(lw_transceiver_t* transceiver);
+
+/* Returns the receiver's video track as a handle bindable with
+ * lw_video_track_bind_sink, or NULL if the receiver has no video track. Handle
+ * owns one reference. */
+LW_C_API lw_video_track_t* lw_receiver_video_track(lw_receiver_t* receiver);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
