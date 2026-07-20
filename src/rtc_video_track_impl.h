@@ -42,6 +42,11 @@ class VideoTrackImpl : public RTCVideoTrack {
     return static_cast<RTCTrackState>(rtc_track_->state());
   }
 
+  // Binds/unbinds a native (zero-copy) sink on this track's adapter (null to
+  // unbind). Driven by the control-plane shim's sink registry; not part of the
+  // public RTCVideoTrack API.
+  void SetNativeSink(const LwVideoSinkV1* sink, void* user);
+
  private:
   webrtc::scoped_refptr<webrtc::VideoTrackInterface> rtc_track_;
   scoped_refptr<RTCVideoSourceImpl> video_source_;

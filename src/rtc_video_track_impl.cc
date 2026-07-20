@@ -28,4 +28,8 @@ void VideoTrackImpl::RemoveRenderer(
   return video_sink_->RemoveRenderer(renderer);
 }
 
+void VideoTrackImpl::SetNativeSink(const LwVideoSinkV1* sink, void* user) {
+  video_sink_->SetNativeSink(sink, user);
+}
+
 }  // namespace libwebrtc
