@@ -25,6 +25,40 @@
 extern "C" {
 #endif
 
+/* Opaque handle to a peer-connection factory. */
+typedef struct lw_factory lw_factory_t;
+
+/* ---- Lifecycle -------------------------------------------------------- */
+
+/* Returns the ABI version the loaded library was built against. A caller
+ * compares this to its own LW_ABI_VERSION at load time. */
+LW_C_API int lw_abi_version(void);
+
+/* Global init/teardown. lw_initialize returns nonzero on success and must be
+ * called once before creating a factory; lw_terminate is called after all
+ * handles have been released. Both are thread-safe. */
+LW_C_API int lw_initialize(void);
+LW_C_API void lw_terminate(void);
+
+/* ---- Factory ---------------------------------------------------------- */
+
+/* Creates a peer-connection factory. Returns NULL on failure; the handle owns
+ * one reference (retire it with lw_release). Call lw_factory_initialize before
+ * using it. */
+LW_C_API lw_factory_t* lw_factory_create(void);
+
+/* Initializes a factory. Returns nonzero on success. */
+LW_C_API int lw_factory_initialize(lw_factory_t* factory);
+
+/* ---- Handle reference counting ---------------------------------------- */
+
+/* Retain/release any lw_* handle (all map to the shared RefCountInterface).
+ * One pair covers every handle type. Null handles are ignored. */
+LW_C_API void lw_retain(void* handle);
+LW_C_API void lw_release(void* handle);
+
+/* ---- Video sink registry ---------------------------------------------- */
+
 /* Opaque handle to a video track, produced by the control-plane shim. */
 typedef struct lw_video_track lw_video_track_t;
 

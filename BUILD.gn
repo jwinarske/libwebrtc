@@ -101,6 +101,7 @@ rtc_shared_library("libwebrtc") {
     "include/c/lw_video_sink.h",
     "src/helper.cc",
     "src/base/portable.cc",
+    "src/c/lw_c_api.cc",
     "src/c/lw_video_sink_registry.cc",
     "src/internal/custom_audio_transport_impl.cc",
     "src/internal/custom_audio_transport_impl.h",
