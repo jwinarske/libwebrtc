@@ -23,6 +23,12 @@
 #if defined(WEBRTC_IOS)
 #include "engine/sdk/objc/Framework/Classes/videotoolboxvideocodecfactory.h"
 #endif
+#if defined(LW_ENABLE_V4L2_CODEC)
+#include <cstdlib>
+
+#include "absl/memory/memory.h"
+#include "v4l2wc/v4l2wc.h"
+#endif
 #include <api/task_queue/default_task_queue_factory.h>
 
 namespace libwebrtc {
@@ -79,6 +85,15 @@ RTCPeerConnectionFactoryImpl::SelectVideoDecoderFactory() {
   if (external_video_decoder_factory_) {
     return std::move(external_video_decoder_factory_);
   }
+#if defined(LW_ENABLE_V4L2_CODEC)
+  // Opt-in at runtime: the hardware V4L2 decoder is used only when LW_V4L2 is
+  // set, so an absorbing build still defaults to the builtin software path.
+  if (std::getenv("LW_V4L2")) {
+    if (void* f = v4l2wc_create_factory(nullptr)) {
+      return absl::WrapUnique(static_cast<webrtc::VideoDecoderFactory*>(f));
+    }
+  }
+#endif
 #if defined(USE_INTEL_MEDIA_SDK)
   return CreateIntelVideoDecoderFactory();
 #else

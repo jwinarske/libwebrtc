@@ -3,6 +3,11 @@ import("../webrtc.gni")
 declare_args() {
   libwebrtc_intel_media_sdk = false
   libwebrtc_desktop_capture = true
+
+  # Absorb the v4l2-webrtc-codec hardware H.264 decoder into libwebrtc.so. The
+  # decoder is selected at runtime only when the LW_V4L2 environment variable is
+  # set, so a build with this on still defaults to the builtin software path.
+  lw_enable_v4l2_codec = false
 }
 
 if (is_android) {
@@ -253,6 +258,12 @@ rtc_shared_library("libwebrtc") {
     "//third_party/boringssl:boringssl",
     "//third_party/libyuv",
   ]
+
+  # v4l2 hardware decoder (absorbed source_set + prebuilt drm-cxx)
+  if (lw_enable_v4l2_codec) {
+    defines += [ "LW_ENABLE_V4L2_CODEC" ]
+    deps += [ "//v4l2-webrtc-codec:v4l2wc" ]
+  }
 
   # screen capture device
   if (libwebrtc_desktop_capture) {
