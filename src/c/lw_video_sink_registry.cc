@@ -97,4 +97,14 @@ int lw_video_track_unbind_sink(lw_video_track_t* track) {
   return 0;
 }
 
+int lw_video_track_set_frame_callback(lw_video_track_t* track, lw_frame_cb cb,
+                                      void* user) {
+  libwebrtc::VideoTrackImpl* impl = AsVideoTrackImpl(track);
+  if (!impl) {
+    return -1;
+  }
+  impl->SetFrameObserver(cb, user);
+  return 0;
+}
+
 }  // extern "C"

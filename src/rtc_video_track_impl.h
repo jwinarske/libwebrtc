@@ -46,6 +46,7 @@ class VideoTrackImpl : public RTCVideoTrack {
   // unbind). Driven by the control-plane shim's sink registry; not part of the
   // public RTCVideoTrack API.
   void SetNativeSink(const LwVideoSinkV1* sink, void* user);
+  void SetFrameObserver(void (*cb)(int, int, void*), void* user);
 
  private:
   webrtc::scoped_refptr<webrtc::VideoTrackInterface> rtc_track_;

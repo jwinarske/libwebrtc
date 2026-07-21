@@ -32,4 +32,8 @@ void VideoTrackImpl::SetNativeSink(const LwVideoSinkV1* sink, void* user) {
   video_sink_->SetNativeSink(sink, user);
 }
 
+void VideoTrackImpl::SetFrameObserver(void (*cb)(int, int, void*), void* user) {
+  video_sink_->SetFrameObserver(cb, user);
+}
+
 }  // namespace libwebrtc

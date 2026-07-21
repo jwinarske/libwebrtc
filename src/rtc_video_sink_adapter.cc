@@ -23,6 +23,12 @@ VideoSinkAdapter::~VideoSinkAdapter() {
 void VideoSinkAdapter::OnFrame(const webrtc::VideoFrame& video_frame) {
   webrtc::MutexLock cs(crt_sec_.get());
 
+  // Telemetry observer: every decoded frame delivered to this adapter, native
+  // or CPU, is counted here before the native/CPU split.
+  if (frame_cb_) {
+    frame_cb_(video_frame.width(), video_frame.height(), frame_user_);
+  }
+
   // Native (zero-copy) frames go to the bound native sink and must never reach
   // the CPU renderer path.
   if (DeliverNative(video_frame)) {
@@ -86,6 +92,13 @@ void VideoSinkAdapter::SetNativeSink(const LwVideoSinkV1* sink, void* user) {
   native_sink_ = sink;
   native_user_ = user;
   have_generation_ = false;  // re-announce format to the new binding
+}
+
+void VideoSinkAdapter::SetFrameObserver(void (*cb)(int, int, void*),
+                                        void* user) {
+  webrtc::MutexLock cs(crt_sec_.get());
+  frame_cb_ = cb;
+  frame_user_ = user;
 }
 
 void VideoSinkAdapter::AddRenderer(

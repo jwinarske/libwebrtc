@@ -36,6 +36,10 @@ class VideoSinkAdapter : public webrtc::VideoSinkInterface<webrtc::VideoFrame>,
   // the binding; unbinding quiesces (waits for any in-flight on_frame).
   virtual void SetNativeSink(const LwVideoSinkV1* sink, void* user);
 
+  // Sets a lightweight per-frame observer that reports each delivered frame's
+  // dimensions (counting/telemetry). Fires for both native and CPU frames.
+  virtual void SetFrameObserver(void (*cb)(int, int, void*), void* user);
+
  protected:
   // VideoSinkInterface implementation
   void OnFrame(const webrtc::VideoFrame& frame) override;
@@ -54,6 +58,10 @@ class VideoSinkAdapter : public webrtc::VideoSinkInterface<webrtc::VideoFrame>,
   void* native_user_ = nullptr;
   uint32_t last_generation_ = 0;
   bool have_generation_ = false;
+
+  // Per-frame telemetry observer, guarded by crt_sec_.
+  void (*frame_cb_)(int, int, void*) = nullptr;
+  void* frame_user_ = nullptr;
 };
 
 }  // namespace libwebrtc

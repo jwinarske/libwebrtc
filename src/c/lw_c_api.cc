@@ -1,7 +1,11 @@
 #include "c/lw_c_api.h"
 
+#include <cstdlib>
+#include <cstring>
+
 #include "base/refcount.h"
 #include "libwebrtc.h"
+#include "rtc_base/logging.h"
 #include "rtc_peerconnection_factory.h"
 
 using libwebrtc::LibWebRTC;
@@ -12,7 +16,17 @@ extern "C" {
 
 int lw_abi_version(void) { return LW_ABI_VERSION; }
 
-int lw_initialize(void) { return LibWebRTC::Initialize() ? 1 : 0; }
+int lw_initialize(void) {
+  // Opt-in diagnostic logging to stderr: LW_LOG=verbose|info (any other
+  // non-empty value maps to info). Off by default.
+  if (const char* lvl = std::getenv("LW_LOG")) {
+    webrtc::LogMessage::SetLogToStderr(true);
+    webrtc::LogMessage::LogToDebug(std::strcmp(lvl, "verbose") == 0
+                                       ? webrtc::LS_VERBOSE
+                                       : webrtc::LS_INFO);
+  }
+  return LibWebRTC::Initialize() ? 1 : 0;
+}
 
 void lw_terminate(void) { LibWebRTC::Terminate(); }
 
