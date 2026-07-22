@@ -9,6 +9,7 @@
 #include "rtc_peerconnection.h"
 #include "rtc_rtp_transceiver.h"
 #include "src/c/lw_handle.h"
+#include "src/c/lw_string.h"
 
 using libwebrtc::RefCountInterface;
 using libwebrtc::RTCIceCandidate;
@@ -50,8 +51,8 @@ class CObserver : public RTCPeerConnectionObserver {
   }
   void OnIceCandidate(scoped_refptr<RTCIceCandidate> candidate) override {
     if (cb_.on_ice_candidate && candidate.get()) {
-      cb_.on_ice_candidate(candidate->candidate().c_string(),
-                           candidate->sdp_mid().c_string(),
+      cb_.on_ice_candidate(lw::DupString(candidate->candidate().c_string()),
+                           lw::DupString(candidate->sdp_mid().c_string()),
                            candidate->sdp_mline_index(), user_);
     }
   }

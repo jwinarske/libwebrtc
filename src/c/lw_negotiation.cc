@@ -2,6 +2,7 @@
 #include "rtc_mediaconstraints.h"
 #include "rtc_peerconnection.h"
 #include "src/c/lw_handle.h"
+#include "src/c/lw_string.h"
 
 using libwebrtc::RTCMediaConstraints;
 using libwebrtc::RTCPeerConnection;
@@ -15,7 +16,7 @@ void lw_pc_create_offer(lw_pc_t* pc, lw_sdp_success_cb on_success,
   auto* p = lw::From<RTCPeerConnection>(pc);
   if (!p) {
     if (on_failure) {
-      on_failure("null peer connection", user);
+      on_failure(lw::DupString("null peer connection"), user);
     }
     return;
   }
@@ -24,12 +25,13 @@ void lw_pc_create_offer(lw_pc_t* pc, lw_sdp_success_cb on_success,
   p->CreateOffer(
       [on_success, user](const string& sdp, const string& type) {
         if (on_success) {
-          on_success(sdp.c_string(), type.c_string(), user);
+          on_success(lw::DupString(sdp.c_string()),
+                     lw::DupString(type.c_string()), user);
         }
       },
       [on_failure, user](const char* error) {
         if (on_failure) {
-          on_failure(error, user);
+          on_failure(lw::DupString(error), user);
         }
       },
       constraints);
@@ -40,7 +42,7 @@ void lw_pc_create_answer(lw_pc_t* pc, lw_sdp_success_cb on_success,
   auto* p = lw::From<RTCPeerConnection>(pc);
   if (!p) {
     if (on_failure) {
-      on_failure("null peer connection", user);
+      on_failure(lw::DupString("null peer connection"), user);
     }
     return;
   }
@@ -49,12 +51,13 @@ void lw_pc_create_answer(lw_pc_t* pc, lw_sdp_success_cb on_success,
   p->CreateAnswer(
       [on_success, user](const string& sdp, const string& type) {
         if (on_success) {
-          on_success(sdp.c_string(), type.c_string(), user);
+          on_success(lw::DupString(sdp.c_string()),
+                     lw::DupString(type.c_string()), user);
         }
       },
       [on_failure, user](const char* error) {
         if (on_failure) {
-          on_failure(error, user);
+          on_failure(lw::DupString(error), user);
         }
       },
       constraints);
@@ -66,7 +69,7 @@ void lw_pc_set_local_description(lw_pc_t* pc, const char* sdp, const char* type,
   auto* p = lw::From<RTCPeerConnection>(pc);
   if (!p) {
     if (on_failure) {
-      on_failure("null peer connection", user);
+      on_failure(lw::DupString("null peer connection"), user);
     }
     return;
   }
@@ -79,7 +82,7 @@ void lw_pc_set_local_description(lw_pc_t* pc, const char* sdp, const char* type,
       },
       [on_failure, user](const char* error) {
         if (on_failure) {
-          on_failure(error, user);
+          on_failure(lw::DupString(error), user);
         }
       });
 }
@@ -91,7 +94,7 @@ void lw_pc_set_remote_description(lw_pc_t* pc, const char* sdp,
   auto* p = lw::From<RTCPeerConnection>(pc);
   if (!p) {
     if (on_failure) {
-      on_failure("null peer connection", user);
+      on_failure(lw::DupString("null peer connection"), user);
     }
     return;
   }
@@ -104,7 +107,7 @@ void lw_pc_set_remote_description(lw_pc_t* pc, const char* sdp,
       },
       [on_failure, user](const char* error) {
         if (on_failure) {
-          on_failure(error, user);
+          on_failure(lw::DupString(error), user);
         }
       });
 }

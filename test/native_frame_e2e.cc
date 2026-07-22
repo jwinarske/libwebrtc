@@ -263,13 +263,13 @@ void RxOnConnectionState(int state, void*) {
   }
 }
 
-void RxOnIceCandidate(const char* candidate, const char* mid, int mline_index,
-                      void* user) {
+void RxOnIceCandidate(char* candidate, char* mid, int mline_index, void* user) {
   auto* rx = static_cast<Receiver*>(user);
-  // The strings are borrowed for the duration of the call, so copy now.
   Candidate cand{.mid = mid != nullptr ? mid : "",
                  .index = mline_index,
                  .candidate = candidate != nullptr ? candidate : ""};
+  lw_string_free(candidate);
+  lw_string_free(mid);
   if (rx->sender->remote_set) {
     rx->sender->pc->AddCandidate(cand.mid.c_str(), cand.index,
                                  cand.candidate.c_str());
@@ -304,22 +304,26 @@ struct SdpResult {
   std::atomic<bool> done{false};
 };
 
-void OnSdp(const char* sdp, const char* /*type*/, void* user) {
+void OnSdp(char* sdp, char* type, void* user) {
   auto* result = static_cast<SdpResult*>(user);
   result->sdp = sdp != nullptr ? sdp : "";
+  lw_string_free(sdp);
+  lw_string_free(type);
   result->done = true;
 }
 
-void OnSdpFailure(const char* error, void* user) {
+void OnSdpFailure(char* error, void* user) {
   std::printf("  sdp failure: %s\n", error != nullptr ? error : "?");
+  lw_string_free(error);
   static_cast<SdpResult*>(user)->done = true;
 }
 
 void OnSetDone(void* user) { *static_cast<std::atomic<bool>*>(user) = true; }
 
-void OnSetFailure(const char* error, void* user) {
+void OnSetFailure(char* error, void* user) {
   std::printf("  set description failure: %s\n",
               error != nullptr ? error : "?");
+  lw_string_free(error);
   *static_cast<std::atomic<bool>*>(user) = true;
 }
 

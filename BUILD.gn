@@ -119,6 +119,8 @@ rtc_shared_library("libwebrtc") {
     "src/c/lw_c_api.cc",
     "src/c/lw_handle.cc",
     "src/c/lw_handle.h",
+    "src/c/lw_string.cc",
+    "src/c/lw_string.h",
     "src/c/lw_negotiation.cc",
     "src/c/lw_observer.cc",
     "src/c/lw_peerconnection.cc",
