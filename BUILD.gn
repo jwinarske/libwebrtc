@@ -307,6 +307,17 @@ rtc_shared_library("libwebrtc") {
   }
 }
 
+# Loopback check of the zero-copy video path: encode, send over a real
+# PeerConnection, decode on hardware, and confirm the decoded frame reaches a
+# native sink as a dma-buf. Needs an H.264 decode device on the host and a
+# build with lw_enable_v4l2_codec=true, so it is a standalone executable rather
+# than part of the unit test suite. See test/native_frame_e2e.cc to run it.
+rtc_executable("lw_native_frame_e2e") {
+  testonly = true
+  sources = [ "test/native_frame_e2e.cc" ]
+  deps = [ ":libwebrtc" ]
+}
+
 rtc_test("libwebrtc_cpp_api_unittests") {
   testonly = true
 
