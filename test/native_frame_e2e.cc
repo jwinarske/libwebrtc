@@ -413,6 +413,15 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(33));
   }
 
+  // The counters must agree with what the sink actually saw: every frame the
+  // track delivered went out as a dmabuf, none took the software path, and
+  // none were dropped.
+  LwVideoTrackStats stats{};
+  stats.size = sizeof(stats);
+  const bool stats_ok =
+      receiver.remote_track != nullptr &&
+      lw_video_track_get_stats(receiver.remote_track, &stats) == 0;
+
   // Mute and unmute the local track. A disabled track keeps flowing, so this
   // checks the state round-trips rather than expecting frames to stop.
   const bool mute_ok = lw_video_track_set_enabled(track, 0) == 0 &&
@@ -427,15 +436,28 @@ int main() {
   const int formats = g_formats.load();
   const int bad = g_bad.load();
   const int cpu = g_delivered.load() - frames;
+  const bool counters_agree =
+      stats_ok && stats.frames_cpu == 0 && stats.frames_dropped == 0 &&
+      stats.frames_native == static_cast<uint64_t>(frames) &&
+      stats.frames_delivered == static_cast<uint64_t>(g_delivered.load()) &&
+      stats.last_width == kWidth && stats.last_height == kHeight &&
+      stats.last_frame_us > 0;
+  std::printf(
+      "  stats delivered=%llu native=%llu cpu=%llu dropped=%llu last=%ux%u\n",
+      static_cast<unsigned long long>(stats.frames_delivered),
+      static_cast<unsigned long long>(stats.frames_native),
+      static_cast<unsigned long long>(stats.frames_cpu),
+      static_cast<unsigned long long>(stats.frames_dropped), stats.last_width,
+      stats.last_height);
   const int early = g_frames_before_format.load();
   std::printf(
       "frames=%d formats=%d malformed=%d cpu_path=%d before_format=%d "
-      "connected=%d mute=%d\n",
+      "connected=%d mute=%d counters=%d\n",
       frames, formats, bad, cpu, early, static_cast<int>(g_connected),
-      static_cast<int>(mute_ok));
+      static_cast<int>(mute_ok), static_cast<int>(counters_agree));
 
   const bool pass = frames >= kWantFrames / 2 && formats >= 1 && bad == 0 &&
-                    cpu == 0 && early == 0 && mute_ok;
+                    cpu == 0 && early == 0 && mute_ok && counters_agree;
   std::printf("RESULT: %s\n", pass ? "PASS" : "FAIL");
 
   if (receiver.remote_track != nullptr) {

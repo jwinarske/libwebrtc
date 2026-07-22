@@ -47,6 +47,7 @@ class VideoTrackImpl : public RTCVideoTrack {
   // public RTCVideoTrack API.
   void SetNativeSink(const LwVideoSinkV1* sink, void* user);
   void SetFrameObserver(void (*cb)(int, int, void*), void* user);
+  void GetStats(LwVideoTrackStats* out) const;
 
  private:
   webrtc::scoped_refptr<webrtc::VideoTrackInterface> rtc_track_;

@@ -1,6 +1,7 @@
 #include "rtc_video_sink_adapter.h"
 
 #include "rtc_base/logging.h"
+#include "rtc_base/time_utils.h"
 #include "rtc_video_frame_impl.h"
 #include "rtc_video_track.h"
 #include "src/internal/lw_native_video_frame_buffer.h"
@@ -23,6 +24,13 @@ VideoSinkAdapter::~VideoSinkAdapter() {
 void VideoSinkAdapter::OnFrame(const webrtc::VideoFrame& video_frame) {
   webrtc::MutexLock cs(crt_sec_.get());
 
+  frames_delivered_.fetch_add(1, std::memory_order_relaxed);
+  last_width_.store(static_cast<uint32_t>(video_frame.width()),
+                    std::memory_order_relaxed);
+  last_height_.store(static_cast<uint32_t>(video_frame.height()),
+                     std::memory_order_relaxed);
+  last_frame_us_.store(webrtc::TimeMicros(), std::memory_order_relaxed);
+
   // Telemetry observer: every decoded frame delivered to this adapter, native
   // or CPU, is counted here before the native/CPU split.
   if (frame_cb_) {
@@ -34,6 +42,7 @@ void VideoSinkAdapter::OnFrame(const webrtc::VideoFrame& video_frame) {
   if (DeliverNative(video_frame)) {
     return;
   }
+  frames_cpu_.fetch_add(1, std::memory_order_relaxed);
 
   scoped_refptr<VideoFrameBufferImpl> frame_buffer =
       scoped_refptr<VideoFrameBufferImpl>(
@@ -59,6 +68,7 @@ bool VideoSinkAdapter::DeliverNative(const webrtc::VideoFrame& video_frame) {
   // the CPU renderer -- drop rather than force a readback.
   auto* native = dynamic_cast<LwNativeVideoFrameBuffer*>(buffer.get());
   if (!native) {
+    frames_dropped_.fetch_add(1, std::memory_order_relaxed);
     return true;
   }
 
@@ -78,10 +88,23 @@ bool VideoSinkAdapter::DeliverNative(const webrtc::VideoFrame& video_frame) {
       // The sink owns the release obligation now; the buffer must not also
       // release when it is destroyed.
       native->DetachRelease();
+      frames_native_.fetch_add(1, std::memory_order_relaxed);
+      return true;
     }
   }
   // No sink bound, or the sink declined: the buffer releases on destruction.
+  frames_dropped_.fetch_add(1, std::memory_order_relaxed);
   return true;
+}
+
+void VideoSinkAdapter::GetStats(LwVideoTrackStats* out) const {
+  out->frames_delivered = frames_delivered_.load(std::memory_order_relaxed);
+  out->frames_native = frames_native_.load(std::memory_order_relaxed);
+  out->frames_cpu = frames_cpu_.load(std::memory_order_relaxed);
+  out->frames_dropped = frames_dropped_.load(std::memory_order_relaxed);
+  out->last_width = last_width_.load(std::memory_order_relaxed);
+  out->last_height = last_height_.load(std::memory_order_relaxed);
+  out->last_frame_us = last_frame_us_.load(std::memory_order_relaxed);
 }
 
 void VideoSinkAdapter::SetNativeSink(const LwVideoSinkV1* sink, void* user) {

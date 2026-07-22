@@ -1,8 +1,11 @@
 #ifndef LIB_WEBRTC_VIDEO_SINK_ADPTER_HXX
 #define LIB_WEBRTC_VIDEO_SINK_ADPTER_HXX
 
+#include <atomic>
+
 #include "api/media_stream_interface.h"
 #include "api/peer_connection_interface.h"
+#include "c/lw_c_api.h"
 #include "c/lw_video_sink.h"
 #include "rtc_base/synchronization/mutex.h"
 #include "rtc_peerconnection.h"
@@ -40,6 +43,11 @@ class VideoSinkAdapter : public webrtc::VideoSinkInterface<webrtc::VideoFrame>,
   // dimensions (counting/telemetry). Fires for both native and CPU frames.
   virtual void SetFrameObserver(void (*cb)(int, int, void*), void* user);
 
+  // Fills `out` with this adapter's frame counters. Safe to call at frame
+  // rate: the counters are atomics, read without taking crt_sec_, so a reader
+  // never contends with the delivery path.
+  virtual void GetStats(LwVideoTrackStats* out) const;
+
  protected:
   // VideoSinkInterface implementation
   void OnFrame(const webrtc::VideoFrame& frame) override;
@@ -62,6 +70,17 @@ class VideoSinkAdapter : public webrtc::VideoSinkInterface<webrtc::VideoFrame>,
   // Per-frame telemetry observer, guarded by crt_sec_.
   void (*frame_cb_)(int, int, void*) = nullptr;
   void* frame_user_ = nullptr;
+
+  // Counters. Written only on the delivery thread and read from anywhere, so
+  // relaxed ordering is enough: each is independently monotonic and a reader
+  // that catches a set mid-update sees a slightly stale count, not a torn one.
+  std::atomic<uint64_t> frames_delivered_{0};
+  std::atomic<uint64_t> frames_native_{0};
+  std::atomic<uint64_t> frames_cpu_{0};
+  std::atomic<uint64_t> frames_dropped_{0};
+  std::atomic<uint32_t> last_width_{0};
+  std::atomic<uint32_t> last_height_{0};
+  std::atomic<int64_t> last_frame_us_{0};
 };
 
 }  // namespace libwebrtc

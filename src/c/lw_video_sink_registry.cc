@@ -98,6 +98,18 @@ int lw_video_track_unbind_sink(lw_video_track_t* track) {
   return 0;
 }
 
+int lw_video_track_get_stats(lw_video_track_t* track, LwVideoTrackStats* out) {
+  libwebrtc::VideoTrackImpl* impl = AsVideoTrackImpl(track);
+  // The caller states the size it compiled against, so a struct that grew
+  // under it is rejected rather than written past.
+  if (impl == nullptr || out == nullptr ||
+      out->size != sizeof(LwVideoTrackStats)) {
+    return -1;
+  }
+  impl->GetStats(out);
+  return 0;
+}
+
 int lw_video_track_set_frame_callback(lw_video_track_t* track, lw_frame_cb cb,
                                       void* user) {
   libwebrtc::VideoTrackImpl* impl = AsVideoTrackImpl(track);
