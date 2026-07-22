@@ -2,11 +2,13 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 #include "base/refcount.h"
 #include "libwebrtc.h"
 #include "rtc_base/logging.h"
 #include "rtc_peerconnection_factory.h"
+#include "src/c/lw_handle.h"
 
 using libwebrtc::LibWebRTC;
 using libwebrtc::RefCountInterface;
@@ -36,18 +38,19 @@ lw_factory_t* lw_factory_create(void) {
   if (!factory.get()) {
     return nullptr;
   }
-  // Transfer the reference into the opaque handle (retired via lw_release).
-  // RTCPeerConnectionFactory derives from RefCountInterface as its first base,
-  // so the pointer value is valid for both this handle and lw_retain/release.
-  return reinterpret_cast<lw_factory_t*>(factory.release());
+  // The factory is its own producer: handles derived from it take a reference
+  // to it, so it outlives every peer connection, transceiver and track the
+  // caller obtained through it regardless of release order (see lw_handle.h).
+  return reinterpret_cast<lw_factory_t*>(
+      lw::Handle::Create(std::move(factory), nullptr));
 }
 
 int lw_factory_initialize(lw_factory_t* factory) {
-  if (!factory) {
+  auto* f = lw::From<RTCPeerConnectionFactory>(factory);
+  if (!f) {
     return 0;
   }
-  return reinterpret_cast<RTCPeerConnectionFactory*>(factory)->Initialize() ? 1
-                                                                            : 0;
+  return f->Initialize() ? 1 : 0;
 }
 
 void lw_retain(void* handle) {

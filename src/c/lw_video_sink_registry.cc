@@ -4,6 +4,7 @@
 
 #include "c/lw_c_api.h"
 #include "rtc_base/synchronization/mutex.h"
+#include "src/c/lw_handle.h"
 #include "src/rtc_video_track_impl.h"
 
 namespace {
@@ -40,9 +41,9 @@ libwebrtc::VideoTrackImpl* AsVideoTrackImpl(lw_video_track_t* track) {
   if (!track) {
     return nullptr;
   }
-  // The shim hands out handles that are libwebrtc::RTCVideoTrack*; validate the
-  // concrete type before use.
-  auto* iface = reinterpret_cast<libwebrtc::RTCVideoTrack*>(track);
+  // The shim hands out handles wrapping a libwebrtc::RTCVideoTrack; validate
+  // the concrete type before use.
+  auto* iface = lw::From<libwebrtc::RTCVideoTrack>(track);
   return dynamic_cast<libwebrtc::VideoTrackImpl*>(iface);
 }
 
@@ -57,7 +58,7 @@ lw_video_sink_token lw_video_sink_register(const LwVideoSinkV1* sink,
   }
   webrtc::MutexLock lock(&RegistryMutex());
   lw_video_sink_token token = GenerateToken();
-  Registry()[token] = SinkEntry{sink, user};
+  Registry()[token] = SinkEntry{.sink = sink, .user = user};
   return token;
 }
 
