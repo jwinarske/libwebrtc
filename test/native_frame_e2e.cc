@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -42,7 +43,6 @@
 #include "rtc_peerconnection.h"
 #include "rtc_peerconnection_factory.h"
 #include "rtc_video_frame.h"
-#include "rtc_video_renderer.h"
 #include "rtc_video_source.h"
 #include "rtc_video_track.h"
 
@@ -57,7 +57,7 @@ constexpr int kWantFrames = 10;
 std::atomic<int> g_frames{0};
 std::atomic<int> g_formats{0};
 std::atomic<int> g_bad{0};
-std::atomic<int> g_cpu_frames{0};
+std::atomic<int> g_delivered{0};
 std::atomic<int> g_frames_before_format{0};
 std::atomic<bool> g_connected{false};
 
@@ -101,15 +101,9 @@ int OnFrame(const LwDmabufDescriptor* d, LwFrameRelease release, void* ctx,
 
 void OnEos(void*) {}
 
-// A plain CPU renderer on the same track. Native frames must never reach it;
-// if they do, the zero-copy path silently fell back to a software conversion.
-class CpuRenderer : public RTCVideoRenderer<scoped_refptr<RTCVideoFrame>> {
- public:
-  void OnFrame(scoped_refptr<RTCVideoFrame> /*frame*/) override {
-    ++g_cpu_frames;
-  }
-};
-CpuRenderer g_cpu_renderer;
+// Counts every frame the track delivers, native or not, before the split.
+// Anything counted here but not by the sink took a software path.
+void OnAnyFrame(int /*width*/, int /*height*/, void*) { ++g_delivered; }
 
 // ---- keep only H.264 in the offer, so the hardware decoder is exercised ----
 
@@ -176,13 +170,15 @@ struct Candidate {
   std::string candidate;
 };
 
+// The sending peer, driven through the C++ interface: creating a video source
+// and attaching a track is not part of the C ABI yet.
 class Peer : public RTCPeerConnectionObserver {
  public:
   const char* name = "";
   scoped_refptr<RTCPeerConnection> pc;
-  Peer* peer = nullptr;
-  bool receives = false;
-  lw_video_sink_token token = 0;
+  // Where local candidates go, and whether the far side can accept them yet.
+  std::function<void(const Candidate&)> deliver;
+  std::atomic<bool>* peer_ready = nullptr;
   std::atomic<bool> remote_set{false};
 
   void OnSignalingState(RTCSignalingState) override {}
@@ -195,26 +191,26 @@ class Peer : public RTCPeerConnectionObserver {
   void OnIceConnectionState(RTCIceConnectionState) override {}
 
   void OnIceCandidate(scoped_refptr<RTCIceCandidate> c) override {
-    if (!c || !peer) {
+    if (!c || !deliver) {
       return;
     }
-    Candidate cand{c->sdp_mid().std_string(), c->sdp_mline_index(),
-                   c->candidate().std_string()};
+    Candidate cand{.mid = c->sdp_mid().std_string(),
+                   .index = c->sdp_mline_index(),
+                   .candidate = c->candidate().std_string()};
     // A candidate is only accepted once the far side has a remote
     // description; buffer until then or it is silently dropped.
-    if (peer->remote_set) {
-      peer->pc->AddCandidate(cand.mid.c_str(), cand.index,
-                             cand.candidate.c_str());
+    if (peer_ready != nullptr && peer_ready->load()) {
+      deliver(cand);
     } else {
       std::lock_guard<std::mutex> lock(mu_);
       outbox_.push_back(std::move(cand));
     }
   }
 
-  void FlushCandidatesTo(Peer* to) {
+  void FlushCandidates() {
     std::lock_guard<std::mutex> lock(mu_);
     for (const Candidate& c : outbox_) {
-      to->pc->AddCandidate(c.mid.c_str(), c.index, c.candidate.c_str());
+      deliver(c);
     }
     outbox_.clear();
   }
@@ -224,28 +220,7 @@ class Peer : public RTCPeerConnectionObserver {
   void OnDataChannel(scoped_refptr<RTCDataChannel>) override {}
   void OnRenegotiationNeeded() override {}
 
-  void OnTrack(scoped_refptr<RTCRtpTransceiver> transceiver) override {
-    if (!receives || !transceiver || token == 0) {
-      return;
-    }
-    scoped_refptr<RTCRtpReceiver> receiver = transceiver->receiver();
-    if (!receiver) {
-      return;
-    }
-    scoped_refptr<RTCMediaTrack> track = receiver->track();
-    auto* video = dynamic_cast<RTCVideoTrack*>(track.get());
-    if (video == nullptr) {
-      return;
-    }
-    // The sink binding lives on this wrapper's adapter, so the wrapper has to
-    // outlive the binding: dropping the reference tears the adapter down and
-    // the sink silently stops receiving.
-    held_track_ = scoped_refptr<RTCVideoTrack>(video);
-    const int rc = lw_video_track_bind_sink(
-        reinterpret_cast<lw_video_track_t*>(video), token);
-    video->AddRenderer(&g_cpu_renderer);
-    std::printf("  remote track bound to native sink (rc=%d)\n", rc);
-  }
+  void OnTrack(scoped_refptr<RTCRtpTransceiver>) override {}
 
   void OnAddTrack(vector<scoped_refptr<RTCMediaStream>>,
                   scoped_refptr<RTCRtpReceiver>) override {}
@@ -254,12 +229,107 @@ class Peer : public RTCPeerConnectionObserver {
  private:
   std::mutex mu_;
   std::vector<Candidate> outbox_;
-  scoped_refptr<RTCVideoTrack> held_track_;
 };
+
+// The receiving peer, driven entirely through the C ABI: this is the surface a
+// dart:ffi or other foreign consumer sees, so the test exercises it rather than
+// the C++ interface underneath.
+struct Receiver {
+  lw_pc_t* pc = nullptr;
+  lw_video_track_t* track = nullptr;
+  lw_video_sink_token token = 0;
+  std::atomic<bool> remote_set{false};
+  Peer* sender = nullptr;
+
+  void Deliver(const Candidate& c) {
+    lw_pc_add_ice_candidate(pc, c.mid.c_str(), c.index, c.candidate.c_str());
+  }
+
+  void FlushCandidates() {
+    std::lock_guard<std::mutex> lock(mu);
+    for (const Candidate& c : outbox) {
+      sender->pc->AddCandidate(c.mid.c_str(), c.index, c.candidate.c_str());
+    }
+    outbox.clear();
+  }
+
+  std::mutex mu;
+  std::vector<Candidate> outbox;
+};
+
+void RxOnConnectionState(int state, void*) {
+  if (state == RTCPeerConnectionStateConnected) {
+    g_connected = true;
+  }
+}
+
+void RxOnIceCandidate(const char* candidate, const char* mid, int mline_index,
+                      void* user) {
+  auto* rx = static_cast<Receiver*>(user);
+  // The strings are borrowed for the duration of the call, so copy now.
+  Candidate cand{.mid = mid != nullptr ? mid : "",
+                 .index = mline_index,
+                 .candidate = candidate != nullptr ? candidate : ""};
+  if (rx->sender->remote_set) {
+    rx->sender->pc->AddCandidate(cand.mid.c_str(), cand.index,
+                                 cand.candidate.c_str());
+  } else {
+    std::lock_guard<std::mutex> lock(rx->mu);
+    rx->outbox.push_back(std::move(cand));
+  }
+}
+
+void RxOnTrack(lw_transceiver_t* transceiver, void* user) {
+  auto* rx = static_cast<Receiver*>(user);
+  // on_track hands over an owning handle.
+  lw_receiver_t* receiver = lw_transceiver_receiver(transceiver);
+  lw_release(transceiver);
+  if (receiver == nullptr) {
+    return;
+  }
+  rx->track = lw_receiver_video_track(receiver);
+  lw_release(receiver);
+  if (rx->track == nullptr) {
+    return;
+  }
+  // The handle keeps the track alive, so the binding outlives this callback.
+  const int rc = lw_video_track_bind_sink(rx->track, rx->token);
+  lw_video_track_set_frame_callback(rx->track, OnAnyFrame, nullptr);
+  std::printf("  remote track bound to native sink (rc=%d)\n", rc);
+}
+
+// SDP callbacks copy their borrowed strings before returning.
+struct SdpResult {
+  std::string sdp;
+  std::atomic<bool> done{false};
+};
+
+void OnSdp(const char* sdp, const char* /*type*/, void* user) {
+  auto* result = static_cast<SdpResult*>(user);
+  result->sdp = sdp != nullptr ? sdp : "";
+  result->done = true;
+}
+
+void OnSdpFailure(const char* error, void* user) {
+  std::printf("  sdp failure: %s\n", error != nullptr ? error : "?");
+  static_cast<SdpResult*>(user)->done = true;
+}
+
+void OnSetDone(void* user) { *static_cast<std::atomic<bool>*>(user) = true; }
+
+void OnSetFailure(const char* error, void* user) {
+  std::printf("  set description failure: %s\n",
+              error != nullptr ? error : "?");
+  *static_cast<std::atomic<bool>*>(user) = true;
+}
 
 std::string g_sdp;
 std::atomic<bool> g_sdp_done{false};
 std::atomic<bool> g_set_done{false};
+// A callback may still be in flight if a wait times out, so the state it
+// writes through outlives every wait.
+std::atomic<bool> g_c_set_done{false};
+SdpResult g_answer;
 
 bool Wait(std::atomic<bool>* flag, int timeout_ms = 10000) {
   for (int i = 0; i < timeout_ms / 10 && !*flag; ++i) {
@@ -305,22 +375,37 @@ int main() {
   RTCConfiguration config;
   scoped_refptr<RTCMediaConstraints> constraints =
       RTCMediaConstraints::Create();
+
+  lw_factory_t* c_factory = lw_factory_create();
+  if (c_factory == nullptr || lw_factory_initialize(c_factory) == 0) {
+    std::printf("RESULT: FAIL (c factory)\n");
+    return 1;
+  }
+
   Peer sender;
-  Peer receiver;
+  Receiver receiver;
   sender.name = "sender";
-  receiver.name = "receiver";
-  receiver.receives = true;
   receiver.token = token;
-  sender.peer = &receiver;
-  receiver.peer = &sender;
+  receiver.sender = &sender;
   sender.pc = factory->Create(config, constraints);
-  receiver.pc = factory->Create(config, constraints);
-  if (!sender.pc || !receiver.pc) {
+  receiver.pc = lw_pc_create(c_factory);
+  if (!sender.pc || receiver.pc == nullptr) {
     std::printf("RESULT: FAIL (peer connection)\n");
     return 1;
   }
+  sender.deliver = [&receiver](const Candidate& c) { receiver.Deliver(c); };
+  sender.peer_ready = &receiver.remote_set;
   sender.pc->RegisterRTCPeerConnectionObserver(&sender);
-  receiver.pc->RegisterRTCPeerConnectionObserver(&receiver);
+
+  LwPcObserver rx_observer{};
+  rx_observer.size = sizeof(rx_observer);
+  rx_observer.on_connection_state = RxOnConnectionState;
+  rx_observer.on_ice_candidate = RxOnIceCandidate;
+  rx_observer.on_track = RxOnTrack;
+  if (lw_pc_set_observer(receiver.pc, &rx_observer, &receiver) != 0) {
+    std::printf("RESULT: FAIL (observer)\n");
+    return 1;
+  }
 
   scoped_refptr<RTCVideoSource> source =
       factory->CreateCustomVideoSource("e2e-source", constraints);
@@ -344,43 +429,48 @@ int main() {
     return 1;
   }
 
-  auto set_description = [&](const scoped_refptr<RTCPeerConnection>& pc,
-                             bool local, const std::string& sdp,
-                             const char* type) {
+  auto set_cpp_description = [&](bool local, const std::string& sdp,
+                                 const char* type) {
     g_set_done = false;
     if (local) {
-      pc->SetLocalDescription(
+      sender.pc->SetLocalDescription(
           sdp.c_str(), type, [] { g_set_done = true; },
           [](const char*) { g_set_done = true; });
     } else {
-      pc->SetRemoteDescription(
+      sender.pc->SetRemoteDescription(
           sdp.c_str(), type, [] { g_set_done = true; },
           [](const char*) { g_set_done = true; });
     }
     return Wait(&g_set_done);
   };
 
-  set_description(sender.pc, true, g_sdp, "offer");
-  set_description(receiver.pc, false, g_sdp, "offer");
-  receiver.remote_set = true;
-  sender.FlushCandidatesTo(&receiver);
+  auto set_c_description = [&](bool local, const std::string& sdp,
+                               const char* type) {
+    g_c_set_done = false;
+    if (local) {
+      lw_pc_set_local_description(receiver.pc, sdp.c_str(), type, OnSetDone,
+                                  OnSetFailure, &g_c_set_done);
+    } else {
+      lw_pc_set_remote_description(receiver.pc, sdp.c_str(), type, OnSetDone,
+                                   OnSetFailure, &g_c_set_done);
+    }
+    return Wait(&g_c_set_done);
+  };
 
-  std::string answer;
-  g_sdp_done = false;
-  receiver.pc->CreateAnswer(
-      [&answer](const string& sdp, const string&) {
-        answer = sdp.std_string();
-        g_sdp_done = true;
-      },
-      [](const char*) { g_sdp_done = true; }, constraints);
-  if (!Wait(&g_sdp_done) || answer.empty()) {
+  set_cpp_description(true, g_sdp, "offer");
+  set_c_description(false, g_sdp, "offer");
+  receiver.remote_set = true;
+  sender.FlushCandidates();
+
+  lw_pc_create_answer(receiver.pc, OnSdp, OnSdpFailure, &g_answer);
+  if (!Wait(&g_answer.done) || g_answer.sdp.empty()) {
     std::printf("RESULT: FAIL (no answer)\n");
     return 1;
   }
-  set_description(receiver.pc, true, answer, "answer");
-  set_description(sender.pc, false, answer, "answer");
+  set_c_description(true, g_answer.sdp, "answer");
+  set_cpp_description(false, g_answer.sdp, "answer");
   sender.remote_set = true;
-  receiver.FlushCandidatesTo(&sender);
+  receiver.FlushCandidates();
 
   // ---- feed frames until the sink has enough, or we give up ---------------
   std::vector<uint8_t> i420(static_cast<size_t>(kWidth) * kHeight * 3 / 2);
@@ -398,10 +488,13 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(33));
   }
 
+  // Let anything in flight land before the counters are compared.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
   const int frames = g_frames.load();
   const int formats = g_formats.load();
   const int bad = g_bad.load();
-  const int cpu = g_cpu_frames.load();
+  const int cpu = g_delivered.load() - frames;
   const int early = g_frames_before_format.load();
   std::printf(
       "frames=%d formats=%d malformed=%d cpu_path=%d before_format=%d "
@@ -412,9 +505,17 @@ int main() {
                     cpu == 0 && early == 0;
   std::printf("RESULT: %s\n", pass ? "PASS" : "FAIL");
 
+  if (receiver.track != nullptr) {
+    lw_video_track_unbind_sink(receiver.track);
+    lw_release(receiver.track);
+  }
   lw_video_sink_unregister(token);
   sender.pc->Close();
-  receiver.pc->Close();
+  lw_pc_remove_observer(receiver.pc);
+  lw_pc_close(receiver.pc);
+  // Released before the factory it came from, and safe in either order.
+  lw_release(receiver.pc);
+  lw_release(c_factory);
   LibWebRTC::Terminate();
   return pass ? 0 : 1;
 }

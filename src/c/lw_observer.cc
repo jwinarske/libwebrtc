@@ -1,13 +1,16 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <utility>
 
 #include "c/lw_c_api.h"
 #include "rtc_base/synchronization/mutex.h"
 #include "rtc_ice_candidate.h"
 #include "rtc_peerconnection.h"
 #include "rtc_rtp_transceiver.h"
+#include "src/c/lw_handle.h"
 
+using libwebrtc::RefCountInterface;
 using libwebrtc::RTCIceCandidate;
 using libwebrtc::RTCPeerConnection;
 using libwebrtc::RTCPeerConnectionObserver;
@@ -21,8 +24,9 @@ namespace {
 // no-ops.
 class CObserver : public RTCPeerConnectionObserver {
  public:
-  CObserver(const LwPcObserver& callbacks, void* user)
-      : cb_(callbacks), user_(user) {}
+  CObserver(const LwPcObserver& callbacks, void* user,
+            scoped_refptr<RefCountInterface> producer)
+      : cb_(callbacks), user_(user), producer_(std::move(producer)) {}
 
   void OnSignalingState(libwebrtc::RTCSignalingState state) override {
     if (cb_.on_signaling_state) {
@@ -58,9 +62,10 @@ class CObserver : public RTCPeerConnectionObserver {
   }
   void OnTrack(scoped_refptr<RTCRtpTransceiver> transceiver) override {
     if (cb_.on_track && transceiver.get()) {
-      // Hand the callback an owning handle (retired with lw_release).
-      transceiver->AddRef();
-      cb_.on_track(reinterpret_cast<lw_transceiver_t*>(transceiver.get()),
+      // Hand the callback an owning handle (retired with lw_release), tied to
+      // the same factory as the peer connection this observer is on.
+      cb_.on_track(reinterpret_cast<lw_transceiver_t*>(
+                       lw::Handle::Create(std::move(transceiver), producer_)),
                    user_);
     }
   }
@@ -76,6 +81,7 @@ class CObserver : public RTCPeerConnectionObserver {
  private:
   LwPcObserver cb_;
   void* user_;
+  const scoped_refptr<RefCountInterface> producer_;
 };
 
 webrtc::Mutex& ObserverMutex() {
@@ -98,8 +104,12 @@ int lw_pc_set_observer(lw_pc_t* pc, const LwPcObserver* observer, void* user) {
   if (!pc || !observer || observer->size < sizeof(LwPcObserver)) {
     return -1;
   }
-  auto* p = reinterpret_cast<RTCPeerConnection*>(pc);
-  auto adapter = std::make_unique<CObserver>(*observer, user);
+  auto* p = lw::From<RTCPeerConnection>(pc);
+  if (!p) {
+    return -1;
+  }
+  auto adapter = std::make_unique<CObserver>(
+      *observer, user, reinterpret_cast<lw::Handle*>(pc)->producer());
 
   webrtc::MutexLock lock(&ObserverMutex());
   auto it = Observers().find(pc);
@@ -115,10 +125,10 @@ int lw_pc_set_observer(lw_pc_t* pc, const LwPcObserver* observer, void* user) {
 }
 
 void lw_pc_remove_observer(lw_pc_t* pc) {
-  if (!pc) {
+  auto* p = lw::From<RTCPeerConnection>(pc);
+  if (!p) {
     return;
   }
-  auto* p = reinterpret_cast<RTCPeerConnection*>(pc);
   webrtc::MutexLock lock(&ObserverMutex());
   auto it = Observers().find(pc);
   if (it != Observers().end()) {

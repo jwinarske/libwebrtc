@@ -117,6 +117,8 @@ rtc_shared_library("libwebrtc") {
     "src/helper.cc",
     "src/base/portable.cc",
     "src/c/lw_c_api.cc",
+    "src/c/lw_handle.cc",
+    "src/c/lw_handle.h",
     "src/c/lw_negotiation.cc",
     "src/c/lw_observer.cc",
     "src/c/lw_peerconnection.cc",
@@ -315,6 +317,9 @@ rtc_shared_library("libwebrtc") {
 rtc_executable("lw_native_frame_e2e") {
   testonly = true
   sources = [ "test/native_frame_e2e.cc" ]
+
+  # Drives the C++ interface directly, so it builds its own C handles.
+  include_dirs = [ "." ]
   deps = [ ":libwebrtc" ]
 }
 
