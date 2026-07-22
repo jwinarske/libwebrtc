@@ -9,6 +9,7 @@
 #include "rtc_peerconnection.h"
 #include "rtc_rtp_transceiver.h"
 #include "src/c/lw_handle.h"
+#include "src/c/lw_string.h"
 
 using libwebrtc::RefCountInterface;
 using libwebrtc::RTCIceCandidate;
@@ -18,6 +19,56 @@ using libwebrtc::RTCRtpTransceiver;
 using libwebrtc::scoped_refptr;
 
 namespace {
+
+// The C enums are what a consumer sees; these keep them honest against the
+// values actually delivered.
+static_assert(LW_SIGNALING_STABLE ==
+              static_cast<int>(libwebrtc::RTCSignalingStateStable));
+static_assert(LW_SIGNALING_HAVE_LOCAL_OFFER ==
+              static_cast<int>(libwebrtc::RTCSignalingStateHaveLocalOffer));
+static_assert(LW_SIGNALING_HAVE_REMOTE_OFFER ==
+              static_cast<int>(libwebrtc::RTCSignalingStateHaveRemoteOffer));
+static_assert(LW_SIGNALING_HAVE_LOCAL_PRANSWER ==
+              static_cast<int>(libwebrtc::RTCSignalingStateHaveLocalPrAnswer));
+static_assert(LW_SIGNALING_HAVE_REMOTE_PRANSWER ==
+              static_cast<int>(libwebrtc::RTCSignalingStateHaveRemotePrAnswer));
+static_assert(LW_SIGNALING_CLOSED ==
+              static_cast<int>(libwebrtc::RTCSignalingStateClosed));
+
+static_assert(LW_PC_STATE_NEW ==
+              static_cast<int>(libwebrtc::RTCPeerConnectionStateNew));
+static_assert(LW_PC_STATE_CONNECTING ==
+              static_cast<int>(libwebrtc::RTCPeerConnectionStateConnecting));
+static_assert(LW_PC_STATE_CONNECTED ==
+              static_cast<int>(libwebrtc::RTCPeerConnectionStateConnected));
+static_assert(LW_PC_STATE_DISCONNECTED ==
+              static_cast<int>(libwebrtc::RTCPeerConnectionStateDisconnected));
+static_assert(LW_PC_STATE_FAILED ==
+              static_cast<int>(libwebrtc::RTCPeerConnectionStateFailed));
+static_assert(LW_PC_STATE_CLOSED ==
+              static_cast<int>(libwebrtc::RTCPeerConnectionStateClosed));
+
+static_assert(LW_ICE_GATHERING_NEW ==
+              static_cast<int>(libwebrtc::RTCIceGatheringStateNew));
+static_assert(LW_ICE_GATHERING_GATHERING ==
+              static_cast<int>(libwebrtc::RTCIceGatheringStateGathering));
+static_assert(LW_ICE_GATHERING_COMPLETE ==
+              static_cast<int>(libwebrtc::RTCIceGatheringStateComplete));
+
+static_assert(LW_ICE_CONNECTION_NEW ==
+              static_cast<int>(libwebrtc::RTCIceConnectionStateNew));
+static_assert(LW_ICE_CONNECTION_CHECKING ==
+              static_cast<int>(libwebrtc::RTCIceConnectionStateChecking));
+static_assert(LW_ICE_CONNECTION_COMPLETED ==
+              static_cast<int>(libwebrtc::RTCIceConnectionStateCompleted));
+static_assert(LW_ICE_CONNECTION_CONNECTED ==
+              static_cast<int>(libwebrtc::RTCIceConnectionStateConnected));
+static_assert(LW_ICE_CONNECTION_FAILED ==
+              static_cast<int>(libwebrtc::RTCIceConnectionStateFailed));
+static_assert(LW_ICE_CONNECTION_DISCONNECTED ==
+              static_cast<int>(libwebrtc::RTCIceConnectionStateDisconnected));
+static_assert(LW_ICE_CONNECTION_CLOSED ==
+              static_cast<int>(libwebrtc::RTCIceConnectionStateClosed));
 
 // Adapts the RTCPeerConnectionObserver C++ interface to the flat LwPcObserver
 // callback table. All virtuals are overridden; those without a callback are
@@ -50,8 +101,8 @@ class CObserver : public RTCPeerConnectionObserver {
   }
   void OnIceCandidate(scoped_refptr<RTCIceCandidate> candidate) override {
     if (cb_.on_ice_candidate && candidate.get()) {
-      cb_.on_ice_candidate(candidate->candidate().c_string(),
-                           candidate->sdp_mid().c_string(),
+      cb_.on_ice_candidate(lw::DupString(candidate->candidate().c_string()),
+                           lw::DupString(candidate->sdp_mid().c_string()),
                            candidate->sdp_mline_index(), user_);
     }
   }

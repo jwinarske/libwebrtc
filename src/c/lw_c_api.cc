@@ -9,6 +9,7 @@
 #include "rtc_base/logging.h"
 #include "rtc_peerconnection_factory.h"
 #include "src/c/lw_handle.h"
+#include "src/c/lw_string.h"
 
 using libwebrtc::LibWebRTC;
 using libwebrtc::RefCountInterface;
@@ -64,5 +65,7 @@ void lw_release(void* handle) {
     reinterpret_cast<RefCountInterface*>(handle)->Release();
   }
 }
+
+void lw_string_free(char* s) { std::free(s); }
 
 }  // extern "C"
