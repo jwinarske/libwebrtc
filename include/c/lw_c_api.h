@@ -176,8 +176,45 @@ LW_C_API void lw_pc_add_ice_candidate(lw_pc_t* pc, const char* mid,
 
 /* ---- Peer-connection events (observer) -------------------------------- */
 
+/* State values delivered to the observer callbacks below. These mirror the
+ * library's own RTC*State enums, which the shim static-asserts against, so a
+ * consumer needs only this header. */
+typedef enum lw_signaling_state {
+  LW_SIGNALING_STABLE = 0,
+  LW_SIGNALING_HAVE_LOCAL_OFFER = 1,
+  LW_SIGNALING_HAVE_REMOTE_OFFER = 2,
+  LW_SIGNALING_HAVE_LOCAL_PRANSWER = 3,
+  LW_SIGNALING_HAVE_REMOTE_PRANSWER = 4,
+  LW_SIGNALING_CLOSED = 5,
+} lw_signaling_state;
+
+typedef enum lw_pc_state {
+  LW_PC_STATE_NEW = 0,
+  LW_PC_STATE_CONNECTING = 1,
+  LW_PC_STATE_CONNECTED = 2,
+  LW_PC_STATE_DISCONNECTED = 3,
+  LW_PC_STATE_FAILED = 4,
+  LW_PC_STATE_CLOSED = 5,
+} lw_pc_state;
+
+typedef enum lw_ice_gathering_state {
+  LW_ICE_GATHERING_NEW = 0,
+  LW_ICE_GATHERING_GATHERING = 1,
+  LW_ICE_GATHERING_COMPLETE = 2,
+} lw_ice_gathering_state;
+
+typedef enum lw_ice_connection_state {
+  LW_ICE_CONNECTION_NEW = 0,
+  LW_ICE_CONNECTION_CHECKING = 1,
+  LW_ICE_CONNECTION_COMPLETED = 2,
+  LW_ICE_CONNECTION_CONNECTED = 3,
+  LW_ICE_CONNECTION_FAILED = 4,
+  LW_ICE_CONNECTION_DISCONNECTED = 5,
+  LW_ICE_CONNECTION_CLOSED = 6,
+} lw_ice_connection_state;
+
 /* Per-event C callbacks, invoked on the signaling thread. Any field may be
- * NULL. State ints correspond to the library's RTC*State enum values. The
+ * NULL. State ints take the values of the enums above. The
  * struct is copied on registration, so it need not outlive the call; the
  * function pointers and `user` must remain valid until the observer is
  * removed. */
