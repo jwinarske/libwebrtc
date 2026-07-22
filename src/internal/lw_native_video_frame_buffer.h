@@ -23,15 +23,13 @@ class LwNativeVideoFrameBuffer : public webrtc::VideoFrameBuffer {
                            LwFrameRelease release, void* release_ctx);
   ~LwNativeVideoFrameBuffer() override;
 
-  Type type() const override { return Type::kNative; }
-  int width() const override { return static_cast<int>(desc_.width); }
-  int height() const override { return static_cast<int>(desc_.height); }
+  Type type() const override;
+  int width() const override;
+  int height() const override;
 
   // No CPU pixels. Consumers must use descriptor(); this returns null so the
   // GetI420() base helper also yields null.
-  webrtc::scoped_refptr<webrtc::I420BufferInterface> ToI420() override {
-    return nullptr;
-  }
+  webrtc::scoped_refptr<webrtc::I420BufferInterface> ToI420() override;
 
   const LwDmabufDescriptor& descriptor() const { return desc_; }
   LwFrameRelease release_fn() const { return release_; }
