@@ -124,6 +124,7 @@ rtc_shared_library("libwebrtc") {
     "src/c/lw_negotiation.cc",
     "src/c/lw_observer.cc",
     "src/c/lw_peerconnection.cc",
+    "src/c/lw_video_send.cc",
     "src/c/lw_video_sink_registry.cc",
     "src/internal/custom_audio_transport_impl.cc",
     "src/internal/custom_audio_transport_impl.h",
@@ -320,8 +321,6 @@ rtc_executable("lw_native_frame_e2e") {
   testonly = true
   sources = [ "test/native_frame_e2e.cc" ]
 
-  # Drives the C++ interface directly, so it builds its own C handles.
-  include_dirs = [ "." ]
   deps = [ ":libwebrtc" ]
 }
 
