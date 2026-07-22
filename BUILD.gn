@@ -32,8 +32,18 @@ if (is_linux) {
 
 config("external_config") {
   include_dirs = [ "include" ]
+  defines = []
   if (is_win) {
-    defines = [ "LIB_WEBRTC_API_DLL" ]
+    defines += [ "LIB_WEBRTC_API_DLL" ]
+  }
+
+  # The public RTCPeerConnectionFactory and RTCVideoSource interfaces declare
+  # extra virtual methods under RTC_DESKTOP_DEVICE. The library is compiled
+  # with that define whenever desktop capture is enabled, so a consumer that
+  # does not see it builds a different vtable layout and its virtual calls
+  # land on the wrong slot. Publish the define so both sides agree.
+  if (libwebrtc_desktop_capture) {
+    defines += [ "RTC_DESKTOP_DEVICE" ]
   }
 }
 

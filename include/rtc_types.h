@@ -11,6 +11,9 @@
 #define LIB_WEBRTC_API
 #endif
 
+#include <cstddef>
+#include <cstdint>
+
 #include "base/fixed_size_function.h"
 #include "base/portable.h"
 #include "base/refcount.h"
