@@ -36,4 +36,8 @@ void VideoTrackImpl::SetFrameObserver(void (*cb)(int, int, void*), void* user) {
   video_sink_->SetFrameObserver(cb, user);
 }
 
+void VideoTrackImpl::GetStats(LwVideoTrackStats* out) const {
+  video_sink_->GetStats(out);
+}
+
 }  // namespace libwebrtc
