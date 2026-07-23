@@ -10,31 +10,50 @@
 namespace libwebrtc {
 namespace {
 
-// Live video tracks by id. Raw pointers: a track removes itself on the way
-// out, and a lookup retains under the same lock, so a caller never receives a
-// pointer that is already being destroyed.
+// Live video tracks by id.
+//
+// The entry holds the *underlying* webrtc track, not the wrapper that
+// published it. Retaining a wrapper here would be unsafe: a wrapper enters its
+// destructor once its count reaches zero and only then takes this lock, so a
+// lookup that won the lock first would resurrect a dying object. Holding the
+// underlying track instead means a lookup retains something that is alive by
+// construction, and builds a fresh wrapper around it.
 webrtc::Mutex& TrackRegistryMutex() {
   static webrtc::Mutex* m = new webrtc::Mutex();
   return *m;
 }
 
-std::map<std::string, VideoTrackImpl*>& TrackRegistry() {
-  static std::map<std::string, VideoTrackImpl*>* m =
-      new std::map<std::string, VideoTrackImpl*>();
+struct Published {
+  webrtc::scoped_refptr<webrtc::VideoTrackInterface> track;
+  // How many live wrappers carry this id. An id stays findable while any of
+  // them is alive: a lookup builds a wrapper of its own, and disposing that
+  // one must not unpublish an id the original still holds.
+  int wrappers;
+};
+
+std::map<std::string, Published>& TrackRegistry() {
+  static std::map<std::string, Published>* m =
+      new std::map<std::string, Published>();
   return *m;
 }
 
 }  // namespace
 
 scoped_refptr<RTCVideoTrack> FindVideoTrackById(const string& id) {
-  webrtc::MutexLock lock(&TrackRegistryMutex());
-  const auto it = TrackRegistry().find(id.std_string());
-  if (it == TrackRegistry().end()) {
-    return nullptr;
+  webrtc::scoped_refptr<webrtc::VideoTrackInterface> underlying;
+  {
+    webrtc::MutexLock lock(&TrackRegistryMutex());
+    const auto it = TrackRegistry().find(id.std_string());
+    if (it == TrackRegistry().end()) {
+      return nullptr;
+    }
+    underlying = it->second.track;  // alive: the registry holds a reference
   }
-  // Retained here, under the lock the destructor also takes, so the track
-  // cannot reach its destructor between this lookup and the caller's use.
-  return scoped_refptr<RTCVideoTrack>(it->second);
+  // A fresh wrapper, with its own sink binding and its own adapter on the
+  // underlying track -- the same shape as any other wrapper of it. Built
+  // outside the lock, since constructing one publishes and would re-enter.
+  return scoped_refptr<RTCVideoTrack>(
+      new RefCountedObject<VideoTrackImpl>(underlying));
 }
 
 VideoTrackImpl::VideoTrackImpl(
@@ -49,16 +68,17 @@ VideoTrackImpl::VideoTrackImpl(
   // A duplicate id replaces the older entry: webrtc ids are unique among live
   // tracks, and the newer one is the reachable track.
   webrtc::MutexLock lock(&TrackRegistryMutex());
-  TrackRegistry()[id_.std_string()] = this;
+  auto& entry = TrackRegistry()[id_.std_string()];
+  entry.track = rtc_track_;  // newest wins, as the id may not be unique
+  ++entry.wrappers;
 }
 
 VideoTrackImpl::~VideoTrackImpl() {
   RTC_LOG(LS_INFO) << __FUNCTION__ << ": dtor ";
   webrtc::MutexLock lock(&TrackRegistryMutex());
   const auto it = TrackRegistry().find(id_.std_string());
-  // Only if it is still ours: a same-id track constructed later replaced this
-  // entry, and removing it then would unpublish the live one.
-  if (it != TrackRegistry().end() && it->second == this) {
+  // Unpublished only when the last wrapper carrying this id goes.
+  if (it != TrackRegistry().end() && --it->second.wrappers <= 0) {
     TrackRegistry().erase(it);
   }
 }
