@@ -530,10 +530,13 @@ int main() {
          ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+    // A channel reports its state before anything has changed it, rather than
+    // whatever happened to be in the field.
+    const int state_before = lw_data_channel_get_state(channel);
     char* label = lw_data_channel_label(channel);
     dc_ok = g_text_received.load() == 1 && g_binary_received.load() == 1 &&
             g_message_mismatch.load() == 0 &&
-            lw_data_channel_get_state(channel) == LW_DATA_CHANNEL_OPEN &&
+            state_before == LW_DATA_CHANNEL_OPEN &&
             lw_data_channel_id(channel) >= 0 && label != nullptr &&
             std::strcmp(label, "e2e-data") == 0;
     lw_string_free(label);
@@ -609,6 +612,22 @@ int main() {
   }
   lw_data_channel_remove_observer(channel);
   lw_data_channel_close(channel);
+  // Closing is a state change like any other: a channel that still reports
+  // itself open afterwards is reporting a value nothing updated.
+  int closed_state = -1;
+  for (int i = 0; i < 200; ++i) {
+    closed_state = lw_data_channel_get_state(channel);
+    if (closed_state == LW_DATA_CHANNEL_CLOSED) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (closed_state != LW_DATA_CHANNEL_CLOSED) {
+    std::printf("  data channel state after close = %d, expected %d\n",
+                closed_state, LW_DATA_CHANNEL_CLOSED);
+    std::printf("RESULT: FAIL (channel state stuck after close)\n");
+    return 1;
+  }
   lw_release(channel);
   lw_video_sink_unregister(token);
   lw_pc_remove_observer(sender.pc);

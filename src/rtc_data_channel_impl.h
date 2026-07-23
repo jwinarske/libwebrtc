@@ -46,7 +46,7 @@ class RTCDataChannelImpl : public RTCDataChannel,
   webrtc::scoped_refptr<webrtc::DataChannelInterface> rtc_data_channel_;
   RTCDataChannelObserver* observer_ = nullptr;
   std::unique_ptr<webrtc::Mutex> crit_sect_;
-  RTCDataChannelState state_;
+  RTCDataChannelState state_ = RTCDataChannelConnecting;
   string label_;
 };
 
