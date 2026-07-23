@@ -12,6 +12,15 @@ namespace libwebrtc {
 
 typedef std::vector<webrtc::scoped_refptr<RTCVideoSource>> VideoSourceVector;
 
+// Finds a live video track by the id it reports through id(), retaining it
+// before returning so it cannot be destroyed between the lookup and the
+// caller taking its own reference. Null when no track has that id.
+//
+// This exists so a consumer that did not create the track -- a separate plugin
+// owning the peer connection, say -- can still reach it to bind a sink. The id
+// is the one webrtc assigns, which such a plugin already surfaces.
+scoped_refptr<RTCVideoTrack> FindVideoTrackById(const string& id);
+
 class VideoTrackImpl : public RTCVideoTrack {
  public:
   VideoTrackImpl(webrtc::scoped_refptr<webrtc::VideoTrackInterface> rtc_track);
