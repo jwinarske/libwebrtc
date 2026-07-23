@@ -17,4 +17,16 @@ char* DupString(const char* s) {
   return copy;
 }
 
+char* DupBytes(const char* data, size_t size) {
+  if (data == nullptr) {
+    return nullptr;
+  }
+  char* copy = static_cast<char*>(std::malloc(size + 1));
+  if (copy != nullptr) {
+    std::memcpy(copy, data, size);
+    copy[size] = '\0';
+  }
+  return copy;
+}
+
 }  // namespace lw
