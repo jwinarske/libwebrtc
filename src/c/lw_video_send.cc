@@ -66,11 +66,13 @@ lw_video_track_t* lw_factory_create_video_track(lw_factory_t* factory,
                                                 const char* id) {
   auto* f = lw::From<RTCPeerConnectionFactory>(factory);
   auto* s = lw::From<RTCVideoSource>(source);
-  if (f == nullptr || s == nullptr) {
+  // An empty id is accepted by the track and then breaks negotiation, far from
+  // here and with a message about the msid attribute, so reject it now.
+  if (f == nullptr || s == nullptr || id == nullptr || *id == '\0') {
     return nullptr;
   }
-  scoped_refptr<RTCVideoTrack> track = f->CreateVideoTrack(
-      scoped_refptr<RTCVideoSource>(s), string(id != nullptr ? id : ""));
+  scoped_refptr<RTCVideoTrack> track =
+      f->CreateVideoTrack(scoped_refptr<RTCVideoSource>(s), string(id));
   return reinterpret_cast<lw_video_track_t*>(
       lw::Derive(factory, std::move(track)));
 }

@@ -145,8 +145,8 @@ typedef struct lw_video_source lw_video_source_t;
 typedef struct lw_sender lw_sender_t;
 
 /* Creates a video source that frames are pushed into, rather than one driven
- * by a capture device. `label` may be NULL. Returns NULL on failure; the
- * handle owns one reference. */
+ * by a capture device. `label` is a diagnostic name and may be NULL. Returns
+ * NULL on failure; the handle owns one reference. */
 LW_C_API lw_video_source_t* lw_factory_create_video_source(
     lw_factory_t* factory, const char* label);
 
@@ -161,8 +161,14 @@ LW_C_API int lw_video_source_push_i420(lw_video_source_t* source, int width,
                                        int height, const uint8_t* data,
                                        size_t size);
 
-/* Creates a local video track fed by `source`. `id` may be NULL. Returns NULL
- * on failure; the handle owns one reference. */
+/* Creates a local video track fed by `source`.
+ *
+ * `id` becomes the track's id in the SDP and must be a non-empty string: an
+ * empty one produces an "a=msid:<stream> " line with nothing after the space,
+ * which the far side rejects when parsing the session description. That
+ * failure names the msid attribute and says nothing about the track, so it is
+ * refused here instead. Returns NULL on failure; the handle owns one
+ * reference. */
 LW_C_API lw_video_track_t* lw_factory_create_video_track(
     lw_factory_t* factory, lw_video_source_t* source, const char* id);
 

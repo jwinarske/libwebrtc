@@ -367,6 +367,12 @@ int main() {
     std::printf("RESULT: FAIL (local video)\n");
     return 1;
   }
+  // An id that would break the offer must be refused where it is supplied.
+  if (lw_factory_create_video_track(factory, source, nullptr) != nullptr ||
+      lw_factory_create_video_track(factory, source, "") != nullptr) {
+    std::printf("RESULT: FAIL (empty track id accepted)\n");
+    return 1;
+  }
   if (lw_video_track_enabled(track) != 1) {
     std::printf("RESULT: FAIL (track not enabled by default)\n");
     return 1;
