@@ -5,6 +5,7 @@
 
 #include "c/lw_c_api.h"
 #include "rtc_base/synchronization/mutex.h"
+#include "rtc_data_channel.h"
 #include "rtc_ice_candidate.h"
 #include "rtc_peerconnection.h"
 #include "rtc_rtp_transceiver.h"
@@ -121,10 +122,21 @@ class CObserver : public RTCPeerConnectionObserver {
     }
   }
 
+  void OnDataChannel(
+      scoped_refptr<libwebrtc::RTCDataChannel> channel) override {
+    if (cb_.on_data_channel && channel.get()) {
+      // Hand the callback an owning handle, tied to the same factory as the
+      // peer connection this observer is on.
+      cb_.on_data_channel(
+          reinterpret_cast<lw_data_channel_t*>(
+              lw::Handle::Create(std::move(channel), producer_)),
+          user_);
+    }
+  }
+
   // Unused events: no-op overrides to satisfy the interface.
   void OnAddStream(scoped_refptr<libwebrtc::RTCMediaStream>) override {}
   void OnRemoveStream(scoped_refptr<libwebrtc::RTCMediaStream>) override {}
-  void OnDataChannel(scoped_refptr<libwebrtc::RTCDataChannel>) override {}
   void OnAddTrack(libwebrtc::vector<scoped_refptr<libwebrtc::RTCMediaStream>>,
                   scoped_refptr<libwebrtc::RTCRtpReceiver>) override {}
   void OnRemoveTrack(scoped_refptr<libwebrtc::RTCRtpReceiver>) override {}

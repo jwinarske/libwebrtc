@@ -52,6 +52,16 @@ std::atomic<int> g_frames{0};
 std::atomic<int> g_formats{0};
 std::atomic<int> g_bad{0};
 std::atomic<uint32_t> g_pool_size{0};
+
+// Data channel: the caller opens one, the callee learns of it through the
+// peer-connection observer, and each sends the other a message.
+lw_data_channel_t* g_remote_channel = nullptr;
+std::atomic<int> g_dc_open{0};
+std::atomic<int> g_text_received{0};
+std::atomic<int> g_binary_received{0};
+std::atomic<int> g_message_mismatch{0};
+constexpr char kTextMessage[] = "ping from the caller";
+constexpr uint8_t kBinaryMessage[] = {0x00, 0x01, 0x02, 0xfe, 0xff};
 std::atomic<int> g_delivered{0};
 std::atomic<int> g_frames_before_format{0};
 std::atomic<bool> g_connected{false};
@@ -205,6 +215,48 @@ struct CPeer {
   std::vector<Candidate> outbox;
 };
 
+void OnChannelState(int state, void*) {
+  if (state == LW_DATA_CHANNEL_OPEN) {
+    ++g_dc_open;
+  }
+}
+
+void OnChannelMessage(char* data, uint32_t size, int binary, void*) {
+  if (binary != 0) {
+    if (size == sizeof(kBinaryMessage) &&
+        std::memcmp(data, kBinaryMessage, size) == 0) {
+      ++g_binary_received;
+    } else {
+      ++g_message_mismatch;  // a zero byte truncated it, or it was reordered
+    }
+  } else {
+    // Text is NUL-terminated past its length, so both readings must agree.
+    if (size == std::strlen(kTextMessage) &&
+        std::strcmp(data, kTextMessage) == 0) {
+      ++g_text_received;
+    } else {
+      ++g_message_mismatch;
+    }
+  }
+  lw_string_free(data);
+}
+
+const LwDataChannelObserver& ChannelObserver() {
+  static LwDataChannelObserver observer = [] {
+    LwDataChannelObserver o{};
+    o.size = sizeof(o);
+    o.on_state = OnChannelState;
+    o.on_message = OnChannelMessage;
+    return o;
+  }();
+  return observer;
+}
+
+void OnDataChannel(lw_data_channel_t* channel, void*) {
+  g_remote_channel = channel;  // owning handle
+  lw_data_channel_set_observer(channel, &ChannelObserver(), nullptr);
+}
+
 void OnConnectionState(int state, void*) {
   if (state == LW_PC_STATE_CONNECTED) {
     g_connected = true;
@@ -351,6 +403,7 @@ int main() {
   observer.on_connection_state = OnConnectionState;
   observer.on_ice_candidate = OnIceCandidate;
   observer.on_track = OnTrack;
+  observer.on_data_channel = OnDataChannel;
   if (lw_pc_set_observer(sender.pc, &observer, &sender) != 0 ||
       lw_pc_set_observer(receiver.pc, &observer, &receiver) != 0) {
     std::printf("RESULT: FAIL (observer)\n");
@@ -369,6 +422,21 @@ int main() {
   }
   if (lw_video_track_enabled(track) != 1) {
     std::printf("RESULT: FAIL (track not enabled by default)\n");
+    return 1;
+  }
+
+  // Opened before the offer so it is negotiated with the media.
+  lw_data_channel_t* channel =
+      lw_pc_create_data_channel(sender.pc, "e2e-data", nullptr);
+  if (channel == nullptr) {
+    std::printf("RESULT: FAIL (data channel)\n");
+    return 1;
+  }
+  lw_data_channel_set_observer(channel, &ChannelObserver(), nullptr);
+  // A label that would leave the channel unnamed must be refused.
+  if (lw_pc_create_data_channel(sender.pc, nullptr, nullptr) != nullptr ||
+      lw_pc_create_data_channel(sender.pc, "", nullptr) != nullptr) {
+    std::printf("RESULT: FAIL (empty channel label accepted)\n");
     return 1;
   }
 
@@ -440,6 +508,34 @@ int main() {
       receiver.remote_track != nullptr &&
       lw_video_track_get_stats(receiver.remote_track, &stats) == 0;
 
+  // Both ends open once SCTP is up; then a message each way.
+  for (int i = 0; i < 500 && g_dc_open.load() < 2; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  bool dc_ok = g_dc_open.load() >= 2 && g_remote_channel != nullptr;
+  if (dc_ok) {
+    lw_data_channel_send(channel,
+                         reinterpret_cast<const uint8_t*>(kTextMessage),
+                         static_cast<uint32_t>(std::strlen(kTextMessage)), 0);
+    lw_data_channel_send(g_remote_channel, kBinaryMessage,
+                         sizeof(kBinaryMessage), 1);
+    for (int i = 0; i < 500 && (g_text_received.load() == 0 ||
+                                g_binary_received.load() == 0);
+         ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    char* label = lw_data_channel_label(channel);
+    dc_ok = g_text_received.load() == 1 && g_binary_received.load() == 1 &&
+            g_message_mismatch.load() == 0 &&
+            lw_data_channel_get_state(channel) == LW_DATA_CHANNEL_OPEN &&
+            lw_data_channel_id(channel) >= 0 && label != nullptr &&
+            std::strcmp(label, "e2e-data") == 0;
+    lw_string_free(label);
+  }
+  std::printf("  data channel open=%d text=%d binary=%d mismatch=%d\n",
+              g_dc_open.load(), g_text_received.load(),
+              g_binary_received.load(), g_message_mismatch.load());
+
   // Transport statistics, which the library gathers asynchronously. Ask on the
   // receiving side, where an inbound RTP stream exists to report on.
   lw_pc_get_stats(receiver.pc, OnStats, OnStatsFailure, nullptr);
@@ -486,20 +582,28 @@ int main() {
   const int early = g_frames_before_format.load();
   std::printf(
       "frames=%d formats=%d malformed=%d cpu_path=%d before_format=%d "
-      "connected=%d mute=%d counters=%d pool=%u stats=%d\n",
+      "connected=%d mute=%d counters=%d pool=%u stats=%d dc=%d\n",
       frames, formats, bad, cpu, early, static_cast<int>(g_connected),
       static_cast<int>(mute_ok), static_cast<int>(counters_agree),
-      g_pool_size.load(), static_cast<int>(stats_json_ok));
+      g_pool_size.load(), static_cast<int>(stats_json_ok),
+      static_cast<int>(dc_ok));
 
   const bool pass = frames >= kWantFrames / 2 && formats >= 1 && bad == 0 &&
                     cpu == 0 && early == 0 && mute_ok && counters_agree &&
-                    g_pool_size.load() > 0 && stats_json_ok;
+                    g_pool_size.load() > 0 && stats_json_ok && dc_ok;
   std::printf("RESULT: %s\n", pass ? "PASS" : "FAIL");
 
   if (receiver.remote_track != nullptr) {
     lw_video_track_unbind_sink(receiver.remote_track);
     lw_release(receiver.remote_track);
   }
+  if (g_remote_channel != nullptr) {
+    lw_data_channel_remove_observer(g_remote_channel);
+    lw_release(g_remote_channel);
+  }
+  lw_data_channel_remove_observer(channel);
+  lw_data_channel_close(channel);
+  lw_release(channel);
   lw_video_sink_unregister(token);
   lw_pc_remove_observer(sender.pc);
   lw_pc_remove_observer(receiver.pc);

@@ -117,6 +117,7 @@ rtc_shared_library("libwebrtc") {
     "src/helper.cc",
     "src/base/portable.cc",
     "src/c/lw_c_api.cc",
+    "src/c/lw_datachannel.cc",
     "src/c/lw_handle.cc",
     "src/c/lw_handle.h",
     "src/c/lw_string.cc",
