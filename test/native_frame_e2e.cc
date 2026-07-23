@@ -599,6 +599,37 @@ int main() {
               g_dc_open.load(), g_text_received.load(),
               g_binary_received.load(), g_message_mismatch.load());
 
+  // A consumer that never saw the track can still reach it by the id webrtc
+  // gave it, which is how a separate plugin owning the peer connection binds a
+  // sink without pointers crossing between them.
+  // A consumer that never saw the track can still reach it by the id webrtc
+  // gave it -- how a separate plugin owning the peer connection binds a sink
+  // without pointers crossing between them.
+  //
+  // Not asserted here: that the found handle is the *receiving* track. This
+  // loopback runs both ends in one process, so the local and remote tracks
+  // share an id (the remote inherits the sender's via msid) and the lookup
+  // cannot tell them apart. Each wrapper has its own adapter and receives
+  // frames independently, so binding through either works; which one comes
+  // back is unspecified.
+  bool find_ok = false;
+  if (receiver.remote_track != nullptr) {
+    char* id = lw_video_track_id(receiver.remote_track);
+    lw_video_track_t* found = id != nullptr ? lw_video_track_find(id) : nullptr;
+    if (found != nullptr) {
+      char* round_trip = lw_video_track_id(found);
+      find_ok = round_trip != nullptr && std::strcmp(round_trip, id) == 0;
+      std::printf("  found by id \"%s\" (round-trip %s)\n", id,
+                  find_ok ? "ok" : "MISMATCH");
+      lw_string_free(round_trip);
+      lw_release(found);
+    }
+    lw_string_free(id);
+    // An id nothing holds must not resolve, and neither must an empty one.
+    find_ok = find_ok && lw_video_track_find("no-such-track") == nullptr &&
+              lw_video_track_find("") == nullptr;
+  }
+
   // Transport statistics, which the library gathers asynchronously. Ask on the
   // receiving side, where an inbound RTP stream exists to report on.
   lw_pc_get_stats(receiver.pc, OnStats, OnStatsFailure, nullptr);
@@ -661,17 +692,17 @@ int main() {
   std::printf(
       "frames=%d formats=%d malformed=%d cpu_path=%d before_format=%d "
       "connected=%d mute=%d counters=%d pool=%u stats=%d dc=%d gen=%u "
-      "switched=%d\n",
+      "switched=%d find=%d\n",
       frames, formats, bad, cpu, early, static_cast<int>(g_connected),
       static_cast<int>(mute_ok), static_cast<int>(counters_agree),
       g_pool_size.load(), static_cast<int>(stats_json_ok),
       static_cast<int>(dc_ok), g_generations_seen.load(),
-      g_switched_geometry.load());
+      g_switched_geometry.load(), static_cast<int>(find_ok));
 
   const bool pass =
       frames >= WantFrames() / 2 && formats >= 1 && bad == 0 && cpu == 0 &&
       early == 0 && mute_ok && counters_agree && g_pool_size.load() > 0 &&
-      stats_json_ok && dc_ok &&
+      stats_json_ok && dc_ok && find_ok &&
       // A switch has to be visible as a new pool generation and
       // a re-announced format, or the consumer would carry an
       // import cache across a pool whose fds have been reused.

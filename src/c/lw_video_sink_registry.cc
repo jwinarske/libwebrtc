@@ -1,10 +1,12 @@
 #include <cstdint>
 #include <map>
 #include <random>
+#include <utility>
 
 #include "c/lw_c_api.h"
 #include "rtc_base/synchronization/mutex.h"
 #include "src/c/lw_handle.h"
+#include "src/c/lw_string.h"
 #include "src/rtc_video_track_impl.h"
 
 namespace {
@@ -65,6 +67,26 @@ lw_video_sink_token lw_video_sink_register(const LwVideoSinkV1* sink,
 int lw_video_sink_unregister(lw_video_sink_token token) {
   webrtc::MutexLock lock(&RegistryMutex());
   return Registry().erase(token) != 0 ? 0 : -1;
+}
+
+lw_video_track_t* lw_video_track_find(const char* track_id) {
+  if (track_id == nullptr || *track_id == '\0') {
+    return nullptr;
+  }
+  libwebrtc::scoped_refptr<libwebrtc::RTCVideoTrack> track =
+      libwebrtc::FindVideoTrackById(libwebrtc::string(track_id));
+  if (!track.get()) {
+    return nullptr;
+  }
+  // No producer: the factory behind this track belongs to whoever created it,
+  // so this handle cannot promise to outlive it (see the header).
+  return reinterpret_cast<lw_video_track_t*>(
+      lw::Handle::Create(std::move(track), nullptr));
+}
+
+char* lw_video_track_id(lw_video_track_t* track) {
+  auto* t = lw::From<libwebrtc::RTCVideoTrack>(track);
+  return t != nullptr ? lw::DupString(t->id().c_string()) : nullptr;
 }
 
 int lw_video_track_bind_sink(lw_video_track_t* track,
