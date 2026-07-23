@@ -51,6 +51,7 @@ constexpr int kWantFrames = 10;
 std::atomic<int> g_frames{0};
 std::atomic<int> g_formats{0};
 std::atomic<int> g_bad{0};
+std::atomic<uint32_t> g_pool_size{0};
 std::atomic<int> g_delivered{0};
 std::atomic<int> g_frames_before_format{0};
 std::atomic<bool> g_connected{false};
@@ -78,6 +79,9 @@ int OnFrame(const LwDmabufDescriptor* d, LwFrameRelease release, void* ctx,
       d->size < sizeof(LwDmabufDescriptor)) {
     ++g_bad;
   }
+  // A consumer bounds what it holds against this, so a producer that does not
+  // advertise it forces every consumer to assume the worst.
+  g_pool_size.store(d->pool_size);
   if (g_frames < 3) {
     std::printf(
         "  sink on_frame  %ux%u fourcc=%.4s planes=%u fd=%d(%s) pitch=%u "
@@ -452,12 +456,14 @@ int main() {
   const int early = g_frames_before_format.load();
   std::printf(
       "frames=%d formats=%d malformed=%d cpu_path=%d before_format=%d "
-      "connected=%d mute=%d counters=%d\n",
+      "connected=%d mute=%d counters=%d pool=%u\n",
       frames, formats, bad, cpu, early, static_cast<int>(g_connected),
-      static_cast<int>(mute_ok), static_cast<int>(counters_agree));
+      static_cast<int>(mute_ok), static_cast<int>(counters_agree),
+      g_pool_size.load());
 
   const bool pass = frames >= kWantFrames / 2 && formats >= 1 && bad == 0 &&
-                    cpu == 0 && early == 0 && mute_ok && counters_agree;
+                    cpu == 0 && early == 0 && mute_ok && counters_agree &&
+                    g_pool_size.load() > 0;
   std::printf("RESULT: %s\n", pass ? "PASS" : "FAIL");
 
   if (receiver.remote_track != nullptr) {
