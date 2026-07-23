@@ -46,6 +46,28 @@ using namespace libwebrtc;
 
 constexpr int kWidth = 320;
 constexpr int kHeight = 240;
+
+// A second geometry to switch to part-way through, which makes the encoder
+// emit a new SPS and the decoder see a format change. Off unless asked for:
+//
+//   LW_E2E_SWITCH_AT=20 ./lw_native_frame_e2e
+//
+// This is the path a stateful decoder handles differently from a
+// pool-per-session one, so it is worth being able to drive on real hardware.
+constexpr int kSwitchWidth = 640;
+constexpr int kSwitchHeight = 480;
+
+int SwitchAfter() {
+  static const int at = [] {
+    const char* env = std::getenv("LW_E2E_SWITCH_AT");
+    if (env == nullptr) {
+      return 0;  // never
+    }
+    const long parsed = std::strtol(env, nullptr, 10);
+    return parsed > 0 && parsed < 100000 ? static_cast<int>(parsed) : 0;
+  }();
+  return at;
+}
 // Frames the sink must take before the run is judged. Ten is enough to show
 // the path works; override to run past the decoder's pool size, which is what
 // exercises buffer reuse -- a pool that never wraps never returns a buffer to
@@ -68,6 +90,11 @@ std::atomic<int> g_frames{0};
 std::atomic<int> g_formats{0};
 std::atomic<int> g_bad{0};
 std::atomic<uint32_t> g_pool_size{0};
+// Sink frames taken when the source switched size, and the pool generations
+// and geometries the sink was shown, so a format change can be checked.
+int g_switch_frame = -1;
+std::atomic<uint32_t> g_generations_seen{0};
+std::atomic<int> g_switched_geometry{0};
 
 // Data channel: the caller opens one, the callee learns of it through the
 // peer-connection observer, and each sends the other a message.
@@ -86,6 +113,7 @@ std::atomic<bool> g_connected{false};
 
 void OnFormat(const LwDmabufDescriptor* d, void*) {
   ++g_formats;
+  g_generations_seen = d->pool_generation;
   std::printf(
       "  sink on_format %ux%u fourcc=%.4s modifier=0x%llx generation=%u\n",
       d->width, d->height, reinterpret_cast<const char*>(&d->fourcc),
@@ -100,9 +128,14 @@ int OnFrame(const LwDmabufDescriptor* d, LwFrameRelease release, void* ctx,
   }
   struct stat st;
   const bool fd_ok = d->planes[0].fd >= 0 && fstat(d->planes[0].fd, &st) == 0;
-  if (!fd_ok || d->width != kWidth || d->height != kHeight ||
-      d->num_planes == 0 || d->num_planes > LW_MAX_PLANES ||
-      d->size < sizeof(LwDmabufDescriptor)) {
+  const bool geometry_ok =
+      (d->width == kWidth && d->height == kHeight) ||
+      (d->width == kSwitchWidth && d->height == kSwitchHeight);
+  if (d->width == kSwitchWidth) {
+    g_switched_geometry = 1;
+  }
+  if (!fd_ok || !geometry_ok || d->num_planes == 0 ||
+      d->num_planes > LW_MAX_PLANES || d->size < sizeof(LwDmabufDescriptor)) {
     ++g_bad;
   }
   // A consumer bounds what it holds against this, so a producer that does not
@@ -503,35 +536,37 @@ int main() {
   receiver.FlushCandidates();
 
   // ---- feed frames until the sink has enough, or we give up ---------------
-  std::vector<uint8_t> i420(static_cast<size_t>(kWidth) * kHeight * 3 / 2);
   // Allow generously more source frames than wanted: some are dropped by the
   // encoder's pacing, and a longer run needs proportionally more slack.
   const int max_source_frames = WantFrames() * 30 + 300;
+  int width = kWidth;
+  int height = kHeight;
+  std::vector<uint8_t> i420;
   for (int n = 0; n < max_source_frames && g_frames < WantFrames(); ++n) {
-    for (int y = 0; y < kHeight; ++y) {
-      for (int x = 0; x < kWidth; ++x) {
-        i420[static_cast<size_t>(y) * kWidth + x] =
+    if (SwitchAfter() != 0 && n == SwitchAfter() && width == kWidth) {
+      width = kSwitchWidth;
+      height = kSwitchHeight;
+      g_switch_frame = g_frames.load();
+      std::printf("  switching source to %dx%d after %d sink frames\n", width,
+                  height, g_switch_frame);
+    }
+    const size_t size = static_cast<size_t>(width) * height * 3 / 2;
+    i420.assign(size, 0);
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
+        i420[static_cast<size_t>(y) * width + x] =
             static_cast<uint8_t>(x + y + n * 3);
       }
     }
-    std::memset(i420.data() + static_cast<size_t>(kWidth) * kHeight, 128,
-                static_cast<size_t>(kWidth) * kHeight / 2);
-    if (lw_video_source_push_i420(source, kWidth, kHeight, i420.data(),
+    std::memset(i420.data() + static_cast<size_t>(width) * height, 128,
+                static_cast<size_t>(width) * height / 2);
+    if (lw_video_source_push_i420(source, width, height, i420.data(),
                                   i420.size()) != 0) {
       std::printf("RESULT: FAIL (push frame)\n");
       return 1;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(33));
   }
-
-  // The counters must agree with what the sink actually saw: every frame the
-  // track delivered went out as a dmabuf, none took the software path, and
-  // none were dropped.
-  LwVideoTrackStats stats{};
-  stats.size = sizeof(stats);
-  const bool stats_ok =
-      receiver.remote_track != nullptr &&
-      lw_video_track_get_stats(receiver.remote_track, &stats) == 0;
 
   // Both ends open once SCTP is up; then a message each way.
   for (int i = 0; i < 500 && g_dc_open.load() < 2; ++i) {
@@ -587,8 +622,19 @@ int main() {
                        lw_video_track_set_enabled(track, 1) == 0 &&
                        lw_video_track_enabled(track) == 1;
 
-  // Let anything in flight land before the counters are compared.
+  // Let anything in flight land before the counters are compared, and read
+  // them only then: a frame arriving between the snapshot and the totals it is
+  // held against would look like a disagreement.
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  // The counters must agree with what the sink actually saw: every frame the
+  // track delivered went out as a dmabuf, none took the software path, and
+  // none were dropped.
+  LwVideoTrackStats stats{};
+  stats.size = sizeof(stats);
+  const bool stats_ok =
+      receiver.remote_track != nullptr &&
+      lw_video_track_get_stats(receiver.remote_track, &stats) == 0;
 
   const int frames = g_frames.load();
   const int formats = g_formats.load();
@@ -598,7 +644,11 @@ int main() {
       stats_ok && stats.frames_cpu == 0 && stats.frames_dropped == 0 &&
       stats.frames_native == static_cast<uint64_t>(frames) &&
       stats.frames_delivered == static_cast<uint64_t>(g_delivered.load()) &&
-      stats.last_width == kWidth && stats.last_height == kHeight &&
+      // After a switch the last frame carries the new geometry, so compare
+      // against whichever is in effect rather than pinning the first.
+      ((stats.last_width == kWidth && stats.last_height == kHeight) ||
+       (g_switched_geometry.load() != 0 && stats.last_width == kSwitchWidth &&
+        stats.last_height == kSwitchHeight)) &&
       stats.last_frame_us > 0;
   std::printf(
       "  stats delivered=%llu native=%llu cpu=%llu dropped=%llu last=%ux%u\n",
@@ -610,15 +660,23 @@ int main() {
   const int early = g_frames_before_format.load();
   std::printf(
       "frames=%d formats=%d malformed=%d cpu_path=%d before_format=%d "
-      "connected=%d mute=%d counters=%d pool=%u stats=%d dc=%d\n",
+      "connected=%d mute=%d counters=%d pool=%u stats=%d dc=%d gen=%u "
+      "switched=%d\n",
       frames, formats, bad, cpu, early, static_cast<int>(g_connected),
       static_cast<int>(mute_ok), static_cast<int>(counters_agree),
       g_pool_size.load(), static_cast<int>(stats_json_ok),
-      static_cast<int>(dc_ok));
+      static_cast<int>(dc_ok), g_generations_seen.load(),
+      g_switched_geometry.load());
 
-  const bool pass = frames >= WantFrames() / 2 && formats >= 1 && bad == 0 &&
-                    cpu == 0 && early == 0 && mute_ok && counters_agree &&
-                    g_pool_size.load() > 0 && stats_json_ok && dc_ok;
+  const bool pass =
+      frames >= WantFrames() / 2 && formats >= 1 && bad == 0 && cpu == 0 &&
+      early == 0 && mute_ok && counters_agree && g_pool_size.load() > 0 &&
+      stats_json_ok && dc_ok &&
+      // A switch has to be visible as a new pool generation and
+      // a re-announced format, or the consumer would carry an
+      // import cache across a pool whose fds have been reused.
+      (SwitchAfter() == 0 || (g_switched_geometry.load() != 0 &&
+                              g_generations_seen.load() >= 2 && formats >= 2));
   std::printf("RESULT: %s\n", pass ? "PASS" : "FAIL");
 
   if (receiver.remote_track != nullptr) {
