@@ -46,7 +46,23 @@ using namespace libwebrtc;
 
 constexpr int kWidth = 320;
 constexpr int kHeight = 240;
-constexpr int kWantFrames = 10;
+// Frames the sink must take before the run is judged. Ten is enough to show
+// the path works; override to run past the decoder's pool size, which is what
+// exercises buffer reuse -- a pool that never wraps never returns a buffer to
+// be decoded into again.
+//
+//   LW_E2E_FRAMES=200 ./lw_native_frame_e2e
+int WantFrames() {
+  static const int frames = [] {
+    const char* env = std::getenv("LW_E2E_FRAMES");
+    if (env == nullptr) {
+      return 10;
+    }
+    const long parsed = std::strtol(env, nullptr, 10);
+    return parsed > 0 && parsed < 100000 ? static_cast<int>(parsed) : 10;
+  }();
+  return frames;
+}
 
 std::atomic<int> g_frames{0};
 std::atomic<int> g_formats{0};
@@ -488,7 +504,10 @@ int main() {
 
   // ---- feed frames until the sink has enough, or we give up ---------------
   std::vector<uint8_t> i420(static_cast<size_t>(kWidth) * kHeight * 3 / 2);
-  for (int n = 0; n < 300 && g_frames < kWantFrames; ++n) {
+  // Allow generously more source frames than wanted: some are dropped by the
+  // encoder's pacing, and a longer run needs proportionally more slack.
+  const int max_source_frames = WantFrames() * 30 + 300;
+  for (int n = 0; n < max_source_frames && g_frames < WantFrames(); ++n) {
     for (int y = 0; y < kHeight; ++y) {
       for (int x = 0; x < kWidth; ++x) {
         i420[static_cast<size_t>(y) * kWidth + x] =
@@ -597,7 +616,7 @@ int main() {
       g_pool_size.load(), static_cast<int>(stats_json_ok),
       static_cast<int>(dc_ok));
 
-  const bool pass = frames >= kWantFrames / 2 && formats >= 1 && bad == 0 &&
+  const bool pass = frames >= WantFrames() / 2 && formats >= 1 && bad == 0 &&
                     cpu == 0 && early == 0 && mute_ok && counters_agree &&
                     g_pool_size.load() > 0 && stats_json_ok && dc_ok;
   std::printf("RESULT: %s\n", pass ? "PASS" : "FAIL");
