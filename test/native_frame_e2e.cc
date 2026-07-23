@@ -273,6 +273,20 @@ std::string g_sdp;
 // A callback may still be in flight if a wait times out, so the state it
 // writes through outlives every wait.
 std::atomic<bool> g_c_set_done{false};
+std::string g_stats_json;
+std::atomic<bool> g_stats_done{false};
+
+void OnStats(char* json, void*) {
+  g_stats_json = json != nullptr ? json : "";
+  lw_string_free(json);
+  g_stats_done = true;
+}
+
+void OnStatsFailure(char* error, void*) {
+  std::printf("  stats failure: %s\n", error != nullptr ? error : "?");
+  lw_string_free(error);
+  g_stats_done = true;
+}
 SdpResult g_offer;
 SdpResult g_answer;
 
@@ -426,6 +440,22 @@ int main() {
       receiver.remote_track != nullptr &&
       lw_video_track_get_stats(receiver.remote_track, &stats) == 0;
 
+  // Transport statistics, which the library gathers asynchronously. Ask on the
+  // receiving side, where an inbound RTP stream exists to report on.
+  lw_pc_get_stats(receiver.pc, OnStats, OnStatsFailure, nullptr);
+  const bool stats_arrived = Wait(&g_stats_done);
+  const bool stats_json_ok =
+      stats_arrived && g_stats_json.size() > 2 && g_stats_json.front() == '[' &&
+      g_stats_json.back() == ']' &&
+      g_stats_json.find("\"inbound-rtp\"") != std::string::npos &&
+      g_stats_json.find("\"candidate-pair\"") != std::string::npos;
+  std::printf("  stats json %zu bytes, inbound-rtp=%d candidate-pair=%d\n",
+              g_stats_json.size(),
+              static_cast<int>(g_stats_json.find("\"inbound-rtp\"") !=
+                               std::string::npos),
+              static_cast<int>(g_stats_json.find("\"candidate-pair\"") !=
+                               std::string::npos));
+
   // Mute and unmute the local track. A disabled track keeps flowing, so this
   // checks the state round-trips rather than expecting frames to stop.
   const bool mute_ok = lw_video_track_set_enabled(track, 0) == 0 &&
@@ -456,14 +486,14 @@ int main() {
   const int early = g_frames_before_format.load();
   std::printf(
       "frames=%d formats=%d malformed=%d cpu_path=%d before_format=%d "
-      "connected=%d mute=%d counters=%d pool=%u\n",
+      "connected=%d mute=%d counters=%d pool=%u stats=%d\n",
       frames, formats, bad, cpu, early, static_cast<int>(g_connected),
       static_cast<int>(mute_ok), static_cast<int>(counters_agree),
-      g_pool_size.load());
+      g_pool_size.load(), static_cast<int>(stats_json_ok));
 
   const bool pass = frames >= kWantFrames / 2 && formats >= 1 && bad == 0 &&
                     cpu == 0 && early == 0 && mute_ok && counters_agree &&
-                    g_pool_size.load() > 0;
+                    g_pool_size.load() > 0 && stats_json_ok;
   std::printf("RESULT: %s\n", pass ? "PASS" : "FAIL");
 
   if (receiver.remote_track != nullptr) {
